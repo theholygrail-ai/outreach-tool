@@ -1,0 +1,24 @@
+{
+  "name": "@outreach-tool/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "express": "^5",
+    "cors": "^2",
+    "multer": "^2",
+    "csv-parse": "^5",
+    "node-cron": "^3",
+    "@aws-sdk/client-dynamodb": "^3",
+    "@aws-sdk/lib-dynamodb": "^3",
+    "@aws-sdk/client-s3": "^3",
+    "@aws-sdk/client-ses": "^3",
+    "@aws-sdk/client-lambda": "^3",
+    "serverless-http": "^3.2.0",
+    "dotenv": "^16"
+  }
+}

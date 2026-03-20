@@ -1,0 +1,378 @@
+import { config } from "@outreach-tool/shared/config";
+import { createLogger } from "@outreach-tool/shared/logger";
+import { createProspect } from "@outreach-tool/shared/prospect-schema";
+import express from "express";
+import cors from "cors";
+import crypto from "crypto";
+import { fork } from "child_process";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+import * as db from "./db.js";
+import { addClient, broadcast } from "./events.js";
+import { buildSettingsSnapshot, runConnectorTest } from "./settings-lib.js";
+
+const log = createLogger("api");
+const app = express();
+const extraCorsOrigins = (process.env.CORS_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin) return cb(null, true);
+    if (/^http:\/\/localhost:\d+$/.test(origin) || /^http:\/\/127\.0\.0\.1:\d+$/.test(origin)) return cb(null, true);
+    if (extraCorsOrigins.includes(origin)) return cb(null, true);
+    if (origin.endsWith(".vercel.app")) return cb(null, true);
+    cb(null, false);
+  },
+  credentials: true,
+}));
+app.use(express.json({ limit: "5mb" }));
+
+// --- Health ---
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    ts: Date.now(),
+    port: parseInt(process.env.API_PORT, 10) || 9002,
+  });
+});
+
+// --- Settings (connectors + endpoint catalog; secrets masked) ---
+app.get("/api/settings", (req, res) => {
+  try {
+    res.json(buildSettingsSnapshot());
+  } catch (err) {
+    log.error("settings", { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/settings/test/:connector", async (req, res) => {
+  try {
+    const result = await runConnectorTest(req.params.connector);
+    res.json({ connector: req.params.connector, ...result });
+  } catch (err) {
+    log.error("settings test", { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- SSE ---
+app.get("/api/events", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+  addClient(res);
+  res.write(`event: connected\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`);
+});
+
+// --- Prospects ---
+app.get("/api/prospects", async (req, res) => {
+  try {
+    const prospects = await db.listProspects();
+    res.json(prospects);
+  } catch (err) {
+    log.error("list prospects", { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/prospects/:id", async (req, res) => {
+  try {
+    const p = await db.getProspect(req.params.id);
+    if (!p) return res.status(404).json({ error: "Not found" });
+    res.json(p);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/prospects", async (req, res) => {
+  try {
+    const prospect = createProspect(req.body);
+    await db.saveProspect(prospect);
+    await db.logActivity({ type: "prospect_created", detail: `Created ${prospect.first_name} ${prospect.last_name} at ${prospect.company_name || ""}` });
+    broadcast("prospect_created", prospect);
+    res.status(201).json(prospect);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/prospects/:id", async (req, res) => {
+  try {
+    const existing = await db.getProspect(req.params.id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    const updated = { ...existing, ...req.body, id: req.params.id, updated_at: new Date().toISOString() };
+    await db.saveProspect(updated);
+    broadcast("prospect_updated", updated);
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/prospects/:id", async (req, res) => {
+  try {
+    await db.deleteProspect(req.params.id);
+    broadcast("prospect_deleted", { id: req.params.id });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/prospects/:id/timeline", async (req, res) => {
+  try {
+    const events = await db.listProspectEvents(req.params.id);
+    res.json(events);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- CSV Import ---
+app.post("/api/prospects/import", async (req, res) => {
+  try {
+    const rows = req.body.rows;
+    if (!Array.isArray(rows)) return res.status(400).json({ error: "rows array required" });
+    const created = [];
+    for (const row of rows) {
+      const prospect = createProspect(row);
+      await db.saveProspect(prospect);
+      created.push(prospect);
+    }
+    await db.logActivity({ type: "import", detail: `Imported ${created.length} prospects from CSV` });
+    broadcast("prospects_imported", { count: created.length });
+    res.status(201).json({ imported: created.length, prospects: created });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Activity ---
+app.get("/api/activity", async (req, res) => {
+  try {
+    const items = await db.listActivity(parseInt(req.query.limit) || 50);
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Pipeline ---
+
+app.get("/api/pipeline/stats", async (req, res) => {
+  try {
+    const prospects = await db.listProspects();
+    const stats = {};
+    for (const p of prospects) stats[p.status] = (stats[p.status] || 0) + 1;
+    const running = await db.getRunningPipelineRun();
+    res.json({ total: prospects.length, by_status: stats, pipeline_status: running ? "running" : "idle" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/pipeline/run", async (req, res) => {
+  const existing = await db.getRunningPipelineRun();
+  if (existing) {
+    return res.status(409).json({ error: "Pipeline already running", run: existing });
+  }
+  try {
+    const runConfig = {
+      mode: req.body.mode || "process",
+      geography: req.body.geography || null,
+      batch_size: req.body.batch_size || 5,
+    };
+
+    const runId = crypto.randomUUID();
+    const run = {
+      id: runId,
+      status: "running",
+      config: runConfig,
+      started_at: new Date().toISOString(),
+      prospects_processed: 0,
+      errors: [],
+    };
+
+    await db.savePipelineRun(run);
+    await db.logActivity({ type: "pipeline_started", detail: `Pipeline run ${runId} started (mode: ${runConfig.mode})` });
+    broadcast("pipeline_started", run);
+
+    try {
+      await runPipeline(run);
+    } catch (err) {
+      log.error("pipeline spawn failed", { error: err.message });
+      run.status = "failed";
+      run.error = err.message;
+      await db.savePipelineRun(run).catch(() => {});
+      broadcast("pipeline_failed", run);
+    }
+
+    res.status(202).json(run);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/pipeline/status", async (req, res) => {
+  const running = await db.getRunningPipelineRun();
+  res.json(running ? { status: "running", current_run: running } : { status: "idle", current_run: null });
+});
+
+app.post("/api/pipeline/discover", async (req, res) => {
+  const existing = await db.getRunningPipelineRun();
+  if (existing) {
+    return res.status(409).json({ error: "Pipeline already running", run: existing });
+  }
+  try {
+    const runConfig = {
+      mode: "discover",
+      country: req.body.country || "US",
+      industry: req.body.industry || null,
+      limit: req.body.limit || 10,
+    };
+    const runId = crypto.randomUUID();
+    const run = { id: runId, status: "running", config: runConfig, started_at: new Date().toISOString(), prospects_processed: 0, errors: [] };
+    await db.savePipelineRun(run);
+    await db.logActivity({ type: "discovery_started", detail: `Discovering prospects in ${runConfig.country} (limit: ${runConfig.limit})` });
+    broadcast("pipeline_started", run);
+    try {
+      await runPipeline(run);
+    } catch (err) {
+      broadcast("pipeline_failed", { run_id: runId, error: err.message });
+    }
+    res.status(202).json(run);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/pipeline/runs", async (req, res) => {
+  try {
+    const runs = await db.listPipelineRuns();
+    res.json(runs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Bookings ---
+app.get("/api/bookings", async (req, res) => {
+  try {
+    const bookings = await db.listBookings();
+    res.json(bookings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Calendly Webhook ---
+app.post("/api/webhooks/calendly", async (req, res) => {
+  try {
+    const signature = req.headers["calendly-webhook-signature"];
+    if (config.calendly?.webhookSecret && signature) {
+      const expected = crypto.createHmac("sha256", config.calendly.webhookSecret).update(JSON.stringify(req.body)).digest("hex");
+      if (!signature.includes(expected)) {
+        return res.status(401).json({ error: "Invalid signature" });
+      }
+    }
+
+    const event = req.body;
+    if (event.event === "invitee.created") {
+      const payload = event.payload;
+      const booking = {
+        id: crypto.randomUUID(),
+        calendly_event_uri: payload.event,
+        invitee_name: payload.name,
+        invitee_email: payload.email,
+        scheduled_at: payload.scheduled_event?.start_time,
+        event_type: payload.scheduled_event?.name,
+        status: "booked",
+        created_at: new Date().toISOString(),
+      };
+      await db.saveBooking(booking);
+      await db.logActivity({ type: "booking", detail: `${booking.invitee_name} booked a call via Calendly` });
+      broadcast("booking_created", booking);
+    }
+
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    log.error("calendly webhook", { error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Tools Status ---
+app.get("/api/tools/status", (req, res) => {
+  res.json({
+    explorium: { status: config.explorium.apiKey ? "configured" : "not_configured" },
+    stitch: { status: "requires_auth" },
+    vercel: { status: "requires_auth" },
+    screenshot: { status: "available" },
+    ses: { status: "sandbox" },
+    calendly: { status: config.calendly?.clientId ? "configured" : "not_configured" },
+    groq: { status: config.groq.apiKey ? "connected" : "not_configured" },
+  });
+});
+
+// --- Pipeline Runner: AWS Lambda async invoke (prod) or child process (local) ---
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+async function runPipeline(run) {
+  const workerFn = process.env.PIPELINE_WORKER_FUNCTION_NAME;
+  if (workerFn) {
+    const lambda = new LambdaClient({ region: process.env.AWS_REGION || config.aws.region });
+    await lambda.send(
+      new InvokeCommand({
+        FunctionName: workerFn,
+        InvocationType: "Event",
+        Payload: Buffer.from(JSON.stringify({ run })),
+      }),
+    );
+    log.info("Pipeline worker invoked (async Lambda)", { run_id: run.id, workerFn });
+    return;
+  }
+
+  const workerPath = join(__dirname, "pipeline-worker.js");
+  const child = fork(workerPath, [JSON.stringify(run)], {
+    stdio: ["pipe", "pipe", "pipe", "ipc"],
+    env: { ...process.env },
+  });
+
+  let buffer = "";
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line);
+        if (msg.event === "progress") broadcast("pipeline_progress", msg.data);
+        if (msg.event === "completed") broadcast("pipeline_completed", msg.data);
+        if (msg.event === "failed") broadcast("pipeline_failed", msg.data);
+        if (msg.event === "error") broadcast("pipeline_error", msg.data);
+      } catch {}
+    }
+  });
+
+  child.stderr.on("data", (chunk) => {
+    log.warn("Pipeline worker stderr", { output: chunk.toString().trim().slice(0, 200) });
+  });
+
+  child.on("close", (code) => {
+    log.info(`Pipeline worker exited with code ${code}`);
+    if (code !== 0) {
+      broadcast("pipeline_failed", { run_id: run.id, error: `Worker exited with code ${code}` });
+    }
+  });
+
+  child.on("error", (err) => {
+    log.error("Pipeline worker spawn error", { error: err.message });
+    broadcast("pipeline_failed", { run_id: run.id, error: err.message });
+  });
+}
+
+export { app, broadcast };

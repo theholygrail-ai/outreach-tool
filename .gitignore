@@ -1,0 +1,38 @@
+.cursor/
+node_modules/
+dist/
+build/
+.env
+.env.local
+.env.*.local
+
+# Runtime data
+data/prospects/*
+data/designs/*
+data/outreach/*
+data/tracking/*
+!data/**/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+*.swp
+*.swo
+
+# AWS CDK
+infra/cdk.out/
+
+# React Native
+packages/mobile/android/
+packages/mobile/ios/
+packages/mobile/.expo/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Coverage
+coverage/

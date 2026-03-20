@@ -1,0 +1,32 @@
+{
+  "name": "@outreach-tool/agents",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./orchestrator": "./src/orchestrator.js",
+    "./groq-client": "./src/groq-client.js",
+    "./mcp-client": "./src/mcp-client.js",
+    "./pipeline": "./src/pipeline.js",
+    "./prompts/system": "./src/prompts/system.js",
+    "./prompts/audit": "./src/prompts/audit.js",
+    "./prompts/design-brief": "./src/prompts/design-brief.js",
+    "./prompts/outreach-email": "./src/prompts/outreach-email.js",
+    "./prompts/outreach-whatsapp": "./src/prompts/outreach-whatsapp.js",
+    "./prompts/outreach-linkedin": "./src/prompts/outreach-linkedin.js",
+    "./prompts/outreach-voice": "./src/prompts/outreach-voice.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "openai": "^4",
+    "dotenv": "^16",
+    "@aws-sdk/client-s3": "^3",
+    "@aws-sdk/client-dynamodb": "^3",
+    "@aws-sdk/lib-dynamodb": "^3",
+    "@aws-sdk/client-ses": "^3"
+  }
+}

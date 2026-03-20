@@ -1,0 +1,17 @@
+{
+  "name": "@outreach-tool/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "App.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "clean": "rm -rf .expo"
+  },
+  "dependencies": {
+    "expo": "^52",
+    "react": "^18",
+    "react-native": "^0.76"
+  }
+}

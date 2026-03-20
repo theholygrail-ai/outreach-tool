@@ -1,0 +1,16 @@
+{
+  "name": "@outreach-tool/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/config.js",
+  "exports": {
+    "./config": "./src/config.js",
+    "./logger": "./src/logger.js",
+    "./prospect-schema": "./src/prospect-schema.js",
+    "./state-machine": "./src/state-machine.js"
+  },
+  "dependencies": {
+    "dotenv": "^16"
+  }
+}

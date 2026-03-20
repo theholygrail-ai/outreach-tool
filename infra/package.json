@@ -1,0 +1,21 @@
+{
+  "name": "@outreach-tool/infra",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo 'CDK JS - no build step'",
+    "synth": "cdk synth --profile astro-invest",
+    "deploy": "cdk deploy --all --profile astro-invest",
+    "destroy": "cdk destroy --all --profile astro-invest",
+    "diff": "cdk diff --profile astro-invest"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2",
+    "constructs": "^10"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2",
+    "esbuild": "^0.24.0"
+  }
+}

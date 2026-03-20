@@ -1,0 +1,32 @@
+{
+  "name": "outreach-tool",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/web",
+    "packages/mobile",
+    "packages/agents",
+    "packages/shared",
+    "packages/api",
+    "infra"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w packages/web",
+    "dev:api": "npm run dev -w packages/api",
+    "dev:agents": "npm run dev -w packages/agents",
+    "build:web": "npm run build -w packages/web",
+    "build:infra": "npm run build -w infra",
+    "deploy:infra": "npm run deploy -w infra",
+    "deploy:api": "npm run deploy -w infra -- --all",
+    "vercel-build": "npm run build:web",
+    "agents:run": "npm run start -w packages/agents",
+    "api:start": "npm run start -w packages/api",
+    "lint": "npm run lint --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
