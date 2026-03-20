@@ -20,14 +20,13 @@
 
 5. Optional: set `PUBLIC_API_URL` on both functions to the Function URL (for Settings UI). Set **Calendly webhook** to `{ApiFunctionUrl}/api/webhooks/calendly` if you use webhooks.
 
-## 2. Vercel — static dashboard
+## 2. Vercel — static dashboard (GitHub integration)
 
-1. Create a project from this GitHub repo (Import → select repo).
-2. **Root directory**: leave default (repository root) — `vercel.json` builds `packages/web`.
-3. **Environment variables** (Production + Preview):
-   - `VITE_API_URL` = your Lambda Function URL (same as CDK `ApiFunctionUrl`, **no trailing slash**).
+Use **Vercel → Import Git Repository** and connect **this** GitHub repo. That enables **automatic deploys on every push** (Production for the default branch, Previews for branches/PRs). More reliable than one-off CLI deploys.
 
-4. Deploy. Open the Vercel URL — the app will call the AWS API via `VITE_API_URL`.
+1. **Root directory**: repository root — `vercel.json` builds `packages/web`.
+2. **Environment variables** (Production + Preview): `VITE_API_URL` = your Lambda Function URL (CDK `ApiFunctionUrl`, **no trailing slash**).
+3. After the first deploy, **each `git push`** redeploys the site. Details: **[docs/VERCEL.md](VERCEL.md)**.
 
 ## 3. GitHub
 
