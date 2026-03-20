@@ -19,7 +19,8 @@ docs/           Agent instruction files
 
 ## Cloud deployment (production)
 
-- **Web UI**: [Vercel](https://vercel.com) — `vercel.json` builds `packages/web`.
+- **GitHub**: **https://github.com/theholygrail-ai/outreach-tool**
+- **Web UI (Vercel)**: Import the repo → see **[docs/VERCEL.md](docs/VERCEL.md)** — `vercel.json` builds `packages/web`.
 - **REST API**: AWS Lambda (Function URL) + async pipeline worker Lambda — see **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 - Set **`VITE_API_URL`** on Vercel to the Lambda Function URL (no trailing slash). Configure API keys on the Lambdas in the AWS Console (do not embed secrets in CDK templates).
 
