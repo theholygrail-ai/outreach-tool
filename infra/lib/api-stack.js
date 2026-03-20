@@ -14,13 +14,11 @@ const repoRoot = path.join(__dirname, "../..");
  * so they never appear in CloudFormation templates.
  */
 function buildLambdaEnv(tableName, options = {}) {
-  const region = process.env.CDK_DEFAULT_REGION || process.env.AWS_REGION || "us-east-1";
   const env = {
     NODE_ENV: "production",
     AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
     DYNAMO_TABLE: tableName,
     SES_REGION: process.env.SES_REGION || "us-east-1",
-    AWS_REGION: region,
   };
   if (options.pipelineWorkerName) {
     env.PIPELINE_WORKER_FUNCTION_NAME = options.pipelineWorkerName;
@@ -87,14 +85,7 @@ export class ApiStack extends cdk.Stack {
       authType: lambda.FunctionUrlAuthType.NONE,
       cors: {
         allowedOrigins: ["*"],
-        allowedMethods: [
-          lambda.HttpMethod.GET,
-          lambda.HttpMethod.POST,
-          lambda.HttpMethod.PUT,
-          lambda.HttpMethod.PATCH,
-          lambda.HttpMethod.DELETE,
-          lambda.HttpMethod.OPTIONS,
-        ],
+        allowedMethods: [lambda.HttpMethod.ALL],
         allowedHeaders: ["*"],
         maxAge: cdk.Duration.hours(1),
       },
