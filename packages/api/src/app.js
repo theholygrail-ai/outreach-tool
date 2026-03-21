@@ -30,6 +30,18 @@ if (!isLambda) {
   }));
 }
 app.use(express.json({ limit: "5mb" }));
+app._getLambdaRawBody = null;
+app.use((req, _res, next) => {
+  const needsParse = req.method !== "GET" && req.method !== "HEAD"
+    && (!req.body || Buffer.isBuffer(req.body) || (typeof req.body === "object" && req.body?.type === "Buffer"));
+  if (needsParse) {
+    const raw = app._getLambdaRawBody?.() || req.apiGateway?.event?.body;
+    if (raw && typeof raw === "string") {
+      try { req.body = JSON.parse(raw); } catch { /* leave empty */ }
+    }
+  }
+  next();
+});
 
 // --- Health ---
 app.get("/api/health", (req, res) => {
@@ -39,6 +51,7 @@ app.get("/api/health", (req, res) => {
     port: parseInt(process.env.API_PORT, 10) || 9002,
   });
 });
+
 
 // --- Settings (connectors + endpoint catalog; secrets masked) ---
 app.get("/api/settings", (req, res) => {

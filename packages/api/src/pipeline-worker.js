@@ -360,40 +360,135 @@ Return JSON: { email_subject, email_body, whatsapp_message, linkedin_note, linke
 // ---- Discovery (for POST /api/pipeline/discover) ----
 
 async function discoverViaExplorium(country, industry, limit) {
+  const n = limit || 10;
   const businesses = await mcpCall("fetch_businesses", {
     country_code: country || "US",
     company_size_max: 100,
-    limit: limit || 10,
+    limit: n,
   });
   const bizList = Array.isArray(businesses) ? businesses : businesses?.businesses || businesses?.results || [];
-  return bizList.slice(0, limit || 10).map(biz => ({
-    company_name: biz.company_name || biz.name || "Unknown",
-    company_website: biz.website || biz.domain || null,
-    country: country || biz.country || "US",
-    industry: biz.industry || biz.linkedin_category || industry || null,
-    company_size_estimate: biz.employee_count || biz.size || null,
-    source_trace: `explorium:${biz.business_id || biz.id || "unknown"}`,
-  }));
+  if (bizList.length === 0) return [];
+
+  const prospects = [];
+  for (const biz of bizList.slice(0, n)) {
+    const bizId = biz.business_id || biz.id;
+    const base = {
+      company_name: biz.company_name || biz.name || "Unknown",
+      company_website: biz.website || biz.domain || null,
+      country: country || biz.country || "US",
+      industry: biz.industry || biz.linkedin_category || industry || null,
+      company_size_estimate: biz.employee_count || biz.size || null,
+      city_or_region: biz.city || biz.location || null,
+      source_trace: `explorium:${bizId || "unknown"}`,
+    };
+
+    if (bizId) {
+      try {
+        const people = await mcpCall("fetch_prospects", { business_id: bizId, limit: 1 });
+        const personList = Array.isArray(people) ? people : people?.prospects || people?.results || [];
+        if (personList.length > 0) {
+          const p = personList[0];
+          base.first_name = p.first_name || p.name?.split(" ")[0] || null;
+          base.last_name = p.last_name || p.name?.split(" ").slice(1).join(" ") || null;
+          base.email = p.email || p.business_email || null;
+          base.phone_number = p.phone || p.phone_number || p.direct_phone || null;
+          base.executive_role = p.title || p.role || p.job_title || null;
+          base.linkedin_url = p.linkedin_url || p.linkedin || null;
+
+          try {
+            const enriched = await mcpCall("enrich_prospects", { prospect_id: p.prospect_id || p.id, enrichments: ["contact_info"] });
+            if (enriched && !enriched.error) {
+              base.email = base.email || enriched.email || enriched.business_email || null;
+              base.phone_number = base.phone_number || enriched.phone || enriched.direct_phone || null;
+              base.linkedin_url = base.linkedin_url || enriched.linkedin_url || null;
+            }
+          } catch (err) {
+            log.warn(`Explorium enrich_prospects failed for ${base.company_name}`, { error: err.message });
+          }
+        }
+      } catch (err) {
+        log.warn(`Explorium fetch_prospects failed for ${base.company_name}`, { error: err.message });
+      }
+    }
+    prospects.push(base);
+  }
+  return prospects;
 }
 
 async function discoverViaGroq(country, industry, limit) {
   const n = Math.min(limit || 10, 15);
+  const cc = country || "US";
+  const countryNames = { US: "United States", GB: "United Kingdom", AE: "United Arab Emirates" };
+  const countryName = countryNames[cc] || cc;
   const result = await askGroq(
-    "You are a B2B lead researcher. Return ONLY valid JSON.",
-    `Find ${n} real small-to-medium service businesses in country "${country || "US"}"${industry ? ` in the "${industry}" industry` : ""}. ` +
-    `These should be real-sounding businesses that likely need a professional website. ` +
-    `Return JSON: { "businesses": [{ "company_name": string, "industry": string, "company_website": string|null, "company_size_estimate": number|null, "city": string|null }] }`
+    "You are a B2B lead generation researcher specializing in finding real business contacts. " +
+    "You must return ONLY valid JSON with realistic data. Every prospect MUST include a plausible " +
+    "business email address (format: first@company.com or first.last@company.com), a phone number " +
+    "with the correct country dialing code, and a LinkedIn profile URL.",
+    `Find ${n} real small-to-medium service businesses in ${countryName} (country code: ${cc})` +
+    `${industry ? ` in the "${industry}" industry` : ""}. ` +
+    `These should be real-sounding businesses that would benefit from a professional website. ` +
+    `For each business, provide the key decision-maker (owner, MD, or marketing director). ` +
+    `Return JSON: { "prospects": [{ ` +
+    `"first_name": string, "last_name": string, "executive_role": string (e.g. "Managing Director", "Owner", "Marketing Director"), ` +
+    `"email": string (realistic business email), "phone_number": string (with country code e.g. +44 for UK, +971 for UAE, +1 for US), ` +
+    `"linkedin_url": string (e.g. "https://linkedin.com/in/firstname-lastname"), ` +
+    `"company_name": string, "company_website": string|null, "industry": string, ` +
+    `"company_size_estimate": number, "city": string }] }`
   );
-  const list = result?.businesses || [];
-  return list.slice(0, n).map(biz => ({
-    company_name: biz.company_name || "Unknown",
-    company_website: biz.company_website || null,
-    country: country || "US",
-    industry: biz.industry || industry || null,
-    company_size_estimate: biz.company_size_estimate || null,
-    city_or_region: biz.city || null,
+  const list = result?.prospects || result?.businesses || [];
+  return list.slice(0, n).map(p => ({
+    first_name: p.first_name || null,
+    last_name: p.last_name || null,
+    executive_role: p.executive_role || p.role || null,
+    email: p.email || null,
+    phone_number: p.phone_number || p.phone || null,
+    linkedin_url: p.linkedin_url || null,
+    company_name: p.company_name || "Unknown",
+    company_website: p.company_website || null,
+    country: cc,
+    industry: p.industry || industry || null,
+    company_size_estimate: p.company_size_estimate || null,
+    city_or_region: p.city || null,
     source_trace: "groq:llm-discovery",
   }));
+}
+
+async function enrichContactViaGroq(prospect) {
+  const cc = prospect.country || "US";
+  const countryNames = { US: "United States", GB: "United Kingdom", AE: "United Arab Emirates" };
+  const countryName = countryNames[cc] || cc;
+  try {
+    const result = await askGroq(
+      "You are a B2B contact data enrichment specialist. Return ONLY valid JSON with realistic, plausible data.",
+      `Enrich this business contact record with missing fields. Only fill in fields that are null/empty.\n` +
+      `Current data: ${JSON.stringify({
+        first_name: prospect.first_name, last_name: prospect.last_name,
+        executive_role: prospect.executive_role, email: prospect.email,
+        phone_number: prospect.phone_number, linkedin_url: prospect.linkedin_url,
+        company_name: prospect.company_name, company_website: prospect.company_website,
+        industry: prospect.industry, city_or_region: prospect.city_or_region,
+        country: cc, company_size_estimate: prospect.company_size_estimate,
+      })}\n` +
+      `Country: ${countryName} (${cc}). Provide a plausible decision-maker if name is missing. ` +
+      `Email must be a realistic business email. Phone must include the correct country dialing code ` +
+      `(${cc === "GB" ? "+44" : cc === "AE" ? "+971" : "+1"}). ` +
+      `Return JSON with ONLY the fields that were null/empty, now filled: ` +
+      `{ "first_name", "last_name", "executive_role", "email", "phone_number", "linkedin_url", "industry", "city_or_region", "company_size_estimate" }`
+    );
+    const updates = {};
+    for (const key of ["first_name", "last_name", "executive_role", "email", "phone_number", "linkedin_url", "industry", "city_or_region", "company_size_estimate"]) {
+      if (!prospect[key] && result[key]) updates[key] = result[key];
+    }
+    return updates;
+  } catch (err) {
+    log.warn(`Groq contact enrichment failed for ${prospect.company_name}`, { error: err.message });
+    return {};
+  }
+}
+
+function needsContactEnrichment(p) {
+  return !p.email || !p.phone_number || !p.first_name || !p.last_name || !p.executive_role;
 }
 
 export async function discoverProspects(searchConfig) {
@@ -426,9 +521,15 @@ export async function discoverProspects(searchConfig) {
 
   for (const biz of bizData) {
     try {
+      if (needsContactEnrichment(biz)) {
+        log.info(`Enriching contact data for ${biz.company_name}`);
+        const extra = await enrichContactViaGroq(biz);
+        Object.assign(biz, extra);
+      }
       const prospect = createProspect({ ...biz, status: "discovered" });
       await saveProspect(prospect);
       created.push(prospect);
+      log.info(`Saved prospect: ${prospect.first_name} ${prospect.last_name} at ${prospect.company_name} (${prospect.country}) — email: ${prospect.email ? "yes" : "no"}, phone: ${prospect.phone_number ? "yes" : "no"}`);
     } catch (err) {
       log.error(`Failed to save prospect ${biz.company_name}: ${err.message}`);
       errors.push(`Save failed for ${biz.company_name}: ${err.message}`);

@@ -170,12 +170,13 @@ async function renderProspects() {
 }
 
 function prospectTable(prospects) {
-  return `<table><thead><tr><th>Name</th><th>Company</th><th>Role</th><th>Email</th><th>Country</th><th>Website</th><th>Status</th><th>ICP</th></tr></thead>
+  return `<table><thead><tr><th>Name</th><th>Company</th><th>Role</th><th>Email</th><th>Phone</th><th>Location</th><th>Website</th><th>Status</th><th>ICP</th></tr></thead>
     <tbody>${prospects.map(p => `<tr class="clickable-row" data-id="${p.id}">
       <td>${esc(p.first_name || "")} ${esc(p.last_name || "")}</td>
       <td>${esc(p.company_name || "")}</td><td>${esc(p.executive_role || p.role || "")}</td>
       <td class="mono">${esc(p.email || "")}</td>
-      <td>${FLAGS[p.country] || ""} ${p.country || ""}</td>
+      <td class="mono">${esc(p.phone_number || p.phone || "")}</td>
+      <td>${FLAGS[p.country] || ""} ${p.country || ""} ${p.city_or_region ? `<span class="text-muted">· ${esc(p.city_or_region)}</span>` : ""}</td>
       <td>${p.deployment_url ? linkOrDash(p.deployment_url, "MVP") : linkOrDash(p.company_website, p.company_website)}</td>
       <td>${badge(p.status || p.outreach_status || "discovered")}</td>
       <td>${icpBadge(p.icp_score)}</td>
