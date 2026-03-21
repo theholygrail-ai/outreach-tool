@@ -1,6 +1,7 @@
 /**
  * Canonical prospect record shape.
- * Fields align with Explorium's fetch-prospects + enrich-prospects output.
+ * Fields align with Explorium's fetch-prospects + enrich-prospects output,
+ * extended with agentic verification / quality scoring fields.
  */
 export const PROSPECT_FIELDS = [
   "id",
@@ -21,6 +22,9 @@ export const PROSPECT_FIELDS = [
   "audit_summary",
   "budget_fit_estimate",
   "icp_score",
+  "quality_score",
+  "verification",
+  "data_sources",
   "status",
   "outreach_status",
   "outreach_channel_status",
@@ -55,6 +59,9 @@ export function createProspect(data = {}) {
     audit_summary: data.audit_summary || null,
     budget_fit_estimate: data.budget_fit_estimate || null,
     icp_score: data.icp_score || null,
+    quality_score: data.quality_score ?? null,
+    verification: data.verification || null,
+    data_sources: data.data_sources || [],
     status,
     outreach_status: status,
     outreach_channel_status: data.outreach_channel_status || {},

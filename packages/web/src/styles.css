@@ -262,6 +262,48 @@ td:first-child { color: var(--text); font-weight: 500; }
 
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
+/* Quality badges */
+.quality-badge { display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 0.125rem 0.5rem; border-radius: 10px; text-align: center; min-width: 2rem; }
+.quality-high { background: var(--success-muted); color: var(--success); }
+.quality-med { background: var(--warning-muted); color: var(--warning); }
+.quality-low { background: var(--danger-muted); color: var(--danger); }
+.quality-none { background: var(--surface-raised); color: var(--text-muted); }
+
+/* Verified/unverified icons */
+.verified-icon { color: var(--success); font-weight: 700; font-size: 0.8rem; margin-right: 0.25rem; }
+.unverified-icon { color: var(--danger); font-weight: 700; font-size: 0.8rem; margin-right: 0.25rem; }
+
+/* Needs-review & unverified status badges */
+.badge-needs_review { background: var(--warning-muted); color: var(--warning); }
+.badge-unverified { background: var(--danger-muted); color: var(--danger); }
+
+/* Audit report */
+.audit-report { padding: 0.5rem 0; }
+.audit-score-header { text-align: center; padding: 1rem 0 1.25rem; border-bottom: 1px solid var(--border-subtle); margin-bottom: 1rem; }
+.audit-score-big { font-size: 2.5rem; font-weight: 700; line-height: 1; }
+.audit-score-big.quality-high { color: var(--success); }
+.audit-score-big.quality-med { color: var(--warning); }
+.audit-score-big.quality-low { color: var(--danger); }
+.audit-score-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-top: 0.25rem; }
+.audit-verified-at { font-size: 0.6875rem; margin-top: 0.25rem; }
+
+.audit-checks { margin-bottom: 1.25rem; }
+.audit-checks h3, .audit-extracted h3, .audit-notes h3, .audit-sources h3, .audit-ux h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.5rem; }
+.audit-check { display: flex; align-items: flex-start; gap: 0.5rem; padding: 0.375rem 0; font-size: 0.8125rem; }
+.check-icon { font-size: 0.875rem; font-weight: 700; width: 1.1rem; flex-shrink: 0; text-align: center; }
+.check-pass .check-icon { color: var(--success); }
+.check-fail .check-icon { color: var(--danger); }
+.check-label { font-weight: 500; }
+.check-detail { font-size: 0.75rem; margin-left: auto; max-width: 55%; text-align: right; word-break: break-word; }
+
+.audit-extracted, .audit-notes, .audit-sources, .audit-ux { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border-subtle); }
+.audit-field { margin-bottom: 0.5rem; }
+.audit-field label { display: block; font-size: 0.6875rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.2rem; }
+.audit-text { font-size: 0.8125rem; line-height: 1.6; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; font-family: "SF Mono", monospace; background: var(--surface-raised); padding: 0.75rem; border-radius: var(--radius-sm); max-height: 200px; overflow-y: auto; }
+
+.source-tags { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.source-tag { display: inline-block; font-size: 0.6875rem; padding: 0.2rem 0.5rem; background: var(--accent-muted); color: var(--accent); border-radius: 8px; text-transform: capitalize; }
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }

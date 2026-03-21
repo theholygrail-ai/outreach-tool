@@ -15,6 +15,15 @@ function icpBadge(score) {
   const c = score >= 85 ? "icp-high" : score >= 70 ? "icp-med" : "icp-low";
   return `<span class="icp-score ${c}">${score || "?"}</span>`;
 }
+function qualityBadge(score) {
+  if (score == null) return `<span class="quality-badge quality-none">—</span>`;
+  const cls = score >= 70 ? "quality-high" : score >= 40 ? "quality-med" : "quality-low";
+  return `<span class="quality-badge ${cls}">${score}</span>`;
+}
+function verifiedIcon(v) {
+  if (!v) return "";
+  return v.company_found_in_search ? `<span class="verified-icon" title="Verified">✓</span>` : `<span class="unverified-icon" title="Not verified">✗</span>`;
+}
 function linkOrDash(url, label) {
   if (!url) return "\u2014";
   const href = url.startsWith("http") ? url : `https://${url}`;
@@ -145,9 +154,27 @@ async function renderProspects() {
   main().innerHTML = `<div class="loading">Loading prospects...</div>`;
   try {
     const prospects = await api.fetchProspects();
+    let qualityFilter = "all";
+
+    function applyFilters(q = "") {
+      let filtered = prospects;
+      if (qualityFilter === "verified") filtered = filtered.filter(p => (p.quality_score || 0) >= 60);
+      else if (qualityFilter === "review") filtered = filtered.filter(p => { const s = p.quality_score || 0; return s >= 30 && s < 60; });
+      else if (qualityFilter === "30+") filtered = filtered.filter(p => (p.quality_score || 0) >= 30);
+      if (q) filtered = filtered.filter(p => `${p.first_name} ${p.last_name} ${p.company_name} ${p.country} ${p.status}`.toLowerCase().includes(q));
+      document.getElementById("prospect-table-wrap").innerHTML = prospectTable(filtered);
+      bindRows();
+    }
+
     main().innerHTML = `
       <div class="view-header"><h1>Prospects <small class="text-muted">(${prospects.length})</small></h1>
         <div class="view-actions">
+          <select id="quality-filter" class="input" style="width:auto">
+            <option value="all">All prospects</option>
+            <option value="verified">Verified (60+)</option>
+            <option value="review">Needs review (30-59)</option>
+            <option value="30+">Scored 30+</option>
+          </select>
           <input type="text" id="search" class="input" placeholder="Search..." />
           <button class="btn btn-sm" id="btn-add">+ New Prospect</button>
           <button class="btn btn-sm" id="btn-csv">Import CSV</button>
@@ -155,11 +182,10 @@ async function renderProspects() {
       </div>
       <div class="card"><div class="table-wrap" id="prospect-table-wrap">${prospectTable(prospects)}</div></div>`;
 
-    document.getElementById("search").addEventListener("input", (e) => {
-      const q = e.target.value.toLowerCase();
-      const filtered = prospects.filter(p => `${p.first_name} ${p.last_name} ${p.company_name} ${p.country} ${p.status}`.toLowerCase().includes(q));
-      document.getElementById("prospect-table-wrap").innerHTML = prospectTable(filtered);
-      bindRows();
+    document.getElementById("search").addEventListener("input", (e) => applyFilters(e.target.value.toLowerCase()));
+    document.getElementById("quality-filter").addEventListener("change", (e) => {
+      qualityFilter = e.target.value;
+      applyFilters(document.getElementById("search").value.toLowerCase());
     });
     document.getElementById("btn-add")?.addEventListener("click", showNewProspectForm);
     document.getElementById("btn-csv")?.addEventListener("click", showCsvImport);
@@ -170,15 +196,16 @@ async function renderProspects() {
 }
 
 function prospectTable(prospects) {
-  return `<table><thead><tr><th>Name</th><th>Company</th><th>Role</th><th>Email</th><th>Phone</th><th>Location</th><th>Website</th><th>Status</th><th>ICP</th></tr></thead>
+  return `<table><thead><tr><th>Name</th><th>Company</th><th>Role</th><th>Email</th><th>Phone</th><th>Location</th><th>Website</th><th>Status</th><th>Quality</th><th>ICP</th></tr></thead>
     <tbody>${prospects.map(p => `<tr class="clickable-row" data-id="${p.id}">
-      <td>${esc(p.first_name || "")} ${esc(p.last_name || "")}</td>
+      <td>${verifiedIcon(p.verification)} ${esc(p.first_name || "")} ${esc(p.last_name || "")}</td>
       <td>${esc(p.company_name || "")}</td><td>${esc(p.executive_role || p.role || "")}</td>
       <td class="mono">${esc(p.email || "")}</td>
       <td class="mono">${esc(p.phone_number || p.phone || "")}</td>
       <td>${FLAGS[p.country] || ""} ${p.country || ""} ${p.city_or_region ? `<span class="text-muted">· ${esc(p.city_or_region)}</span>` : ""}</td>
       <td>${p.deployment_url ? linkOrDash(p.deployment_url, "MVP") : linkOrDash(p.company_website, p.company_website)}</td>
       <td>${badge(p.status || p.outreach_status || "discovered")}</td>
+      <td>${qualityBadge(p.quality_score)}</td>
       <td>${icpBadge(p.icp_score)}</td>
     </tr>`).join("")}</tbody></table>`;
 }
@@ -221,8 +248,47 @@ async function openProspectModal(id) {
           ${dRow("Notes", esc(p.notes))}
         </div>`;
       } else if (tab === "audit") {
-        body.innerHTML = `<div class="audit-section"><h3>Website: ${linkOrDash(p.company_website, p.company_website)} ${badge(p.website_status || "unknown")}</h3>
-          ${p.audit_summary ? `<pre class="audit-text">${esc(p.audit_summary)}</pre>` : '<div class="empty">No audit yet. Process this prospect through the pipeline.</div>'}</div>`;
+        const v = p.verification;
+        if (!v) {
+          body.innerHTML = `<div class="empty">No verification data yet. Run discovery with verification enabled.</div>`;
+        } else {
+          const checkRow = (label, passed, detail) =>
+            `<div class="audit-check ${passed ? "check-pass" : "check-fail"}">
+              <span class="check-icon">${passed ? "✓" : "✗"}</span>
+              <span class="check-label">${label}</span>
+              ${detail ? `<span class="check-detail text-muted">${esc(detail)}</span>` : ""}
+            </div>`;
+          body.innerHTML = `
+            <div class="audit-report">
+              <div class="audit-score-header">
+                <div class="audit-score-big ${(v.quality_score || 0) >= 70 ? "quality-high" : (v.quality_score || 0) >= 40 ? "quality-med" : "quality-low"}">${v.quality_score ?? "—"}</div>
+                <div class="audit-score-label">Quality Score</div>
+                <div class="audit-verified-at text-muted">${v.verified_at ? `Verified ${timeAgo(v.verified_at)}` : ""}</div>
+              </div>
+              <div class="audit-checks">
+                <h3>Verification Checks</h3>
+                ${checkRow("Website is live", v.website_live, v.website_live ? `HTTP ${v.website_http_status}` : v.website_description || "Not reachable")}
+                ${v.website_title ? checkRow("Website title", true, v.website_title) : ""}
+                ${checkRow("Company found in web search", v.company_found_in_search, v.company_search_snippet || (v.company_search_url ? v.company_search_url : "Not found"))}
+                ${checkRow("Contacts extracted from website", v.contacts_from_website, v.contacts_from_website ? `${(v.extracted_emails || []).length} emails, ${(v.extracted_phones || []).length} phones` : "None found")}
+                ${checkRow("Email format valid", v.email_format_valid, p.email || "No email")}
+                ${checkRow("Email domain matches website", v.email_domain_matches_website, "")}
+                ${checkRow("Phone format valid", v.phone_format_valid, p.phone_number || "No phone")}
+                ${checkRow("Has contact name", !!(p.first_name && p.last_name), p.first_name ? `${p.first_name} ${p.last_name}` : "Missing")}
+                ${checkRow("Has role/title", !!p.executive_role, p.executive_role || "Missing")}
+              </div>
+              ${(v.extracted_emails?.length || v.extracted_phones?.length || Object.keys(v.extracted_social || {}).length) ? `
+              <div class="audit-extracted">
+                <h3>Extracted Contact Data</h3>
+                ${v.extracted_emails?.length ? `<div class="audit-field"><label>Emails from website</label><div class="mono">${v.extracted_emails.map(e => esc(e)).join(", ")}</div></div>` : ""}
+                ${v.extracted_phones?.length ? `<div class="audit-field"><label>Phones from website</label><div class="mono">${v.extracted_phones.map(ph => esc(ph)).join(", ")}</div></div>` : ""}
+                ${Object.keys(v.extracted_social || {}).length ? `<div class="audit-field"><label>Social links</label><div>${Object.entries(v.extracted_social).map(([k, url]) => `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(k)}</a>`).join(" · ")}</div></div>` : ""}
+              </div>` : ""}
+              ${v.agent_notes ? `<div class="audit-notes"><h3>Agent Notes</h3><pre class="audit-text">${esc(v.agent_notes)}</pre></div>` : ""}
+              ${(p.data_sources || []).length ? `<div class="audit-sources"><h3>Data Sources</h3><div class="source-tags">${p.data_sources.map(s => `<span class="source-tag">${esc(s.replace(/_/g, " "))}</span>`).join("")}</div></div>` : ""}
+              ${p.audit_summary ? `<div class="audit-ux"><h3>Website UX Audit</h3><pre class="audit-text">${esc(p.audit_summary)}</pre></div>` : ""}
+            </div>`;
+        }
       } else if (tab === "timeline") {
         body.innerHTML = `<div class="loading">Loading timeline...</div>`;
         api.fetchProspectTimeline(id).then(events => {

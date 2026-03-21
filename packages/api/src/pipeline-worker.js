@@ -415,81 +415,326 @@ async function discoverViaExplorium(country, industry, limit) {
   return prospects;
 }
 
-async function discoverViaGroq(country, industry, limit) {
+// ---- Brave Search Client ----
+
+const BRAVE_KEY = config.brave.apiKey;
+const BRAVE_URL = "https://api.search.brave.com/res/v1/web/search";
+
+async function braveSearch(query, count = 10, country = "") {
+  if (!BRAVE_KEY) throw new Error("BRAVE_API_KEY not set");
+  const params = new URLSearchParams({ q: query, count: String(count) });
+  if (country) params.set("country", country);
+  const res = await fetch(`${BRAVE_URL}?${params}`, {
+    headers: { Accept: "application/json", "X-Subscription-Token": BRAVE_KEY },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`Brave Search ${res.status}: ${await res.text().catch(() => "")}`);
+  const data = await res.json();
+  return (data.web?.results || []).map(r => ({
+    title: r.title, url: r.url, description: r.description,
+  }));
+}
+
+async function discoverViaBraveSearch(country, industry, limit) {
   const n = Math.min(limit || 10, 15);
   const cc = country || "US";
   const countryNames = { US: "United States", GB: "United Kingdom", AE: "United Arab Emirates" };
   const countryName = countryNames[cc] || cc;
+
+  const queries = [];
+  if (industry) {
+    queries.push(`small ${industry} businesses in ${countryName} company website`);
+    queries.push(`"${industry}" small business ${countryName} contact`);
+  } else {
+    queries.push(`small service businesses in ${countryName} that need a website`);
+    queries.push(`small business directory ${countryName} local services company`);
+  }
+
+  const allResults = [];
+  for (const q of queries) {
+    try {
+      const results = await braveSearch(q, 10, cc.toLowerCase());
+      allResults.push(...results);
+      log.info(`Brave Search "${q}" returned ${results.length} results`);
+    } catch (err) {
+      log.warn(`Brave Search query failed: ${err.message}`);
+    }
+  }
+
+  if (allResults.length === 0) throw new Error("Brave Search returned no results");
+
+  const searchContext = allResults.slice(0, 20).map((r, i) =>
+    `[${i + 1}] ${r.title}\n    URL: ${r.url}\n    ${r.description || ""}`
+  ).join("\n\n");
+
   const result = await askGroq(
-    "You are a B2B lead generation researcher specializing in finding real business contacts. " +
-    "You must return ONLY valid JSON with realistic data. Every prospect MUST include a plausible " +
-    "business email address (format: first@company.com or first.last@company.com), a phone number " +
-    "with the correct country dialing code, and a LinkedIn profile URL.",
-    `Find ${n} real small-to-medium service businesses in ${countryName} (country code: ${cc})` +
-    `${industry ? ` in the "${industry}" industry` : ""}. ` +
-    `These should be real-sounding businesses that would benefit from a professional website. ` +
-    `For each business, provide the key decision-maker (owner, MD, or marketing director). ` +
+    "You are a B2B lead data extractor. You MUST extract real businesses from the provided search results. " +
+    "Do NOT invent or fabricate any data. Only use information actually present in the search results. " +
+    "If a field is not available in the search results, set it to null. Return ONLY valid JSON.",
+    `Extract up to ${n} real small-to-medium service businesses from these search results.\n` +
+    `Target country: ${countryName} (${cc}).\n` +
+    `Only include businesses that appear to be real companies from the search results.\n\n` +
+    `SEARCH RESULTS:\n${searchContext}\n\n` +
+    `For each business found in the results, extract:\n` +
     `Return JSON: { "prospects": [{ ` +
-    `"first_name": string, "last_name": string, "executive_role": string (e.g. "Managing Director", "Owner", "Marketing Director"), ` +
-    `"email": string (realistic business email), "phone_number": string (with country code e.g. +44 for UK, +971 for UAE, +1 for US), ` +
-    `"linkedin_url": string (e.g. "https://linkedin.com/in/firstname-lastname"), ` +
-    `"company_name": string, "company_website": string|null, "industry": string, ` +
-    `"company_size_estimate": number, "city": string }] }`
+    `"company_name": string, "company_website": string|null (from the search URL if it looks like a company site), ` +
+    `"industry": string|null, "city": string|null, "description": string (brief, from search snippet) }] }`
   );
+
   const list = result?.prospects || result?.businesses || [];
   return list.slice(0, n).map(p => ({
-    first_name: p.first_name || null,
-    last_name: p.last_name || null,
-    executive_role: p.executive_role || p.role || null,
-    email: p.email || null,
-    phone_number: p.phone_number || p.phone || null,
-    linkedin_url: p.linkedin_url || null,
     company_name: p.company_name || "Unknown",
     company_website: p.company_website || null,
     country: cc,
     industry: p.industry || industry || null,
     company_size_estimate: p.company_size_estimate || null,
     city_or_region: p.city || null,
-    source_trace: "groq:llm-discovery",
+    source_trace: "brave_search",
+    data_sources: ["brave_search"],
   }));
 }
 
-async function enrichContactViaGroq(prospect) {
-  const cc = prospect.country || "US";
-  const countryNames = { US: "United States", GB: "United Kingdom", AE: "United Arab Emirates" };
-  const countryName = countryNames[cc] || cc;
+// ---- Verification Agent ----
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || "");
+}
+
+function emailDomainMatchesWebsite(email, website) {
+  if (!email || !website) return false;
+  const emailDomain = email.split("@")[1]?.toLowerCase();
   try {
-    const result = await askGroq(
-      "You are a B2B contact data enrichment specialist. Return ONLY valid JSON with realistic, plausible data.",
-      `Enrich this business contact record with missing fields. Only fill in fields that are null/empty.\n` +
-      `Current data: ${JSON.stringify({
-        first_name: prospect.first_name, last_name: prospect.last_name,
-        executive_role: prospect.executive_role, email: prospect.email,
-        phone_number: prospect.phone_number, linkedin_url: prospect.linkedin_url,
-        company_name: prospect.company_name, company_website: prospect.company_website,
-        industry: prospect.industry, city_or_region: prospect.city_or_region,
-        country: cc, company_size_estimate: prospect.company_size_estimate,
-      })}\n` +
-      `Country: ${countryName} (${cc}). Provide a plausible decision-maker if name is missing. ` +
-      `Email must be a realistic business email. Phone must include the correct country dialing code ` +
-      `(${cc === "GB" ? "+44" : cc === "AE" ? "+971" : "+1"}). ` +
-      `Return JSON with ONLY the fields that were null/empty, now filled: ` +
-      `{ "first_name", "last_name", "executive_role", "email", "phone_number", "linkedin_url", "industry", "city_or_region", "company_size_estimate" }`
-    );
-    const updates = {};
-    for (const key of ["first_name", "last_name", "executive_role", "email", "phone_number", "linkedin_url", "industry", "city_or_region", "company_size_estimate"]) {
-      if (!prospect[key] && result[key]) updates[key] = result[key];
-    }
-    return updates;
+    const siteDomain = new URL(website.startsWith("http") ? website : `https://${website}`).hostname.replace(/^www\./, "");
+    return emailDomain === siteDomain || siteDomain.endsWith(`.${emailDomain}`) || emailDomain.endsWith(`.${siteDomain}`);
+  } catch { return false; }
+}
+
+function isValidPhone(phone, country) {
+  if (!phone) return false;
+  const digits = phone.replace(/\D/g, "");
+  const prefixes = { US: "1", GB: "44", AE: "971" };
+  const prefix = prefixes[country];
+  if (prefix && !digits.startsWith(prefix)) return false;
+  return digits.length >= 10 && digits.length <= 15;
+}
+
+async function checkWebsite(url) {
+  if (!url) return { website_live: false, website_http_status: 0, website_title: null, website_description: null };
+  const fullUrl = url.startsWith("http") ? url : `https://${url}`;
+  try {
+    const res = await fetch(fullUrl, { method: "GET", redirect: "follow", signal: AbortSignal.timeout(10000) });
+    const html = await res.text();
+    const title = html.match(/<title[^>]*>(.*?)<\/title>/i)?.[1]?.trim() || null;
+    const desc = html.match(/<meta[^>]*name=["']description["'][^>]*content=["'](.*?)["']/i)?.[1]?.trim() || null;
+    return {
+      website_live: res.ok,
+      website_http_status: res.status,
+      website_title: title,
+      website_description: desc,
+    };
   } catch (err) {
-    log.warn(`Groq contact enrichment failed for ${prospect.company_name}`, { error: err.message });
-    return {};
+    return { website_live: false, website_http_status: 0, website_title: null, website_description: `Error: ${err.message}` };
   }
 }
 
-function needsContactEnrichment(p) {
-  return !p.email || !p.phone_number || !p.first_name || !p.last_name || !p.executive_role;
+async function crossReferenceCompany(companyName, country) {
+  try {
+    const results = await braveSearch(`"${companyName}" ${country}`, 5, (country || "").toLowerCase());
+    const match = results.find(r =>
+      r.title?.toLowerCase().includes(companyName.toLowerCase().split(" ")[0]) ||
+      r.description?.toLowerCase().includes(companyName.toLowerCase().split(" ")[0])
+    );
+    return {
+      company_found_in_search: !!match,
+      company_search_url: match?.url || null,
+      company_search_snippet: match?.description?.slice(0, 300) || null,
+    };
+  } catch (err) {
+    log.warn(`Brave cross-reference failed for ${companyName}`, { error: err.message });
+    return { company_found_in_search: false, company_search_url: null, company_search_snippet: null };
+  }
 }
+
+async function extractContactsFromWebsite(companyName, websiteContent) {
+  if (!websiteContent || websiteContent.length < 50) return { contacts_from_website: false, extracted_emails: [], extracted_phones: [], extracted_social: {} };
+
+  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+  const phoneRegex = /(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}/g;
+  const rawEmails = [...new Set((websiteContent.match(emailRegex) || []).filter(e => !e.includes("example.com") && !e.includes("sentry")))].slice(0, 5);
+  const rawPhones = [...new Set((websiteContent.match(phoneRegex) || []).filter(p => p.replace(/\D/g, "").length >= 10))].slice(0, 5);
+
+  const social = {};
+  const linkedinMatch = websiteContent.match(/https?:\/\/(?:www\.)?linkedin\.com\/(?:company|in)\/[^\s"'<>]+/i);
+  if (linkedinMatch) social.linkedin = linkedinMatch[0];
+  const fbMatch = websiteContent.match(/https?:\/\/(?:www\.)?facebook\.com\/[^\s"'<>]+/i);
+  if (fbMatch) social.facebook = fbMatch[0];
+  const twMatch = websiteContent.match(/https?:\/\/(?:www\.)?(?:twitter|x)\.com\/[^\s"'<>]+/i);
+  if (twMatch) social.twitter = twMatch[0];
+
+  let groqContacts = {};
+  try {
+    groqContacts = await askGroq(
+      "You are a contact information extractor. Extract ONLY information that is explicitly present in the provided text. Do NOT invent any data.",
+      `Extract contact information for "${companyName}" from this website content:\n${websiteContent.slice(0, 3000)}\n\n` +
+      `Return JSON: { "contact_name": string|null (owner/director name if found), "contact_role": string|null, "contact_email": string|null, "contact_phone": string|null }`
+    );
+  } catch { /* skip Groq extraction if it fails */ }
+
+  return {
+    contacts_from_website: rawEmails.length > 0 || rawPhones.length > 0 || !!groqContacts.contact_name,
+    extracted_emails: rawEmails,
+    extracted_phones: rawPhones,
+    extracted_social: social,
+    extracted_contact_name: groqContacts.contact_name || null,
+    extracted_contact_role: groqContacts.contact_role || null,
+    extracted_contact_email: groqContacts.contact_email || null,
+    extracted_contact_phone: groqContacts.contact_phone || null,
+  };
+}
+
+async function verifyProspect(prospect) {
+  log.info(`Verifying prospect: ${prospect.company_name}`);
+  const v = {
+    website_live: false, website_http_status: 0, website_title: null, website_description: null,
+    company_found_in_search: false, company_search_url: null, company_search_snippet: null,
+    contacts_from_website: false, extracted_emails: [], extracted_phones: [], extracted_social: {},
+    email_format_valid: false, email_domain_matches_website: false, phone_format_valid: false,
+    data_sources: [...(prospect.data_sources || [])],
+    verified_at: new Date().toISOString(),
+    agent_notes: "",
+  };
+  const notes = [];
+
+  const webCheck = await checkWebsite(prospect.company_website);
+  Object.assign(v, webCheck);
+  if (v.website_live) {
+    notes.push(`Website is live (HTTP ${v.website_http_status}).`);
+  } else if (prospect.company_website) {
+    notes.push(`Website ${prospect.company_website} is unreachable.`);
+  } else {
+    notes.push("No website provided.");
+  }
+
+  if (BRAVE_KEY) {
+    const searchCheck = await crossReferenceCompany(prospect.company_name, prospect.country);
+    Object.assign(v, searchCheck);
+    if (v.company_found_in_search) {
+      notes.push(`Company confirmed via Brave Search: ${v.company_search_url}`);
+      if (!v.data_sources.includes("brave_search")) v.data_sources.push("brave_search");
+    } else {
+      notes.push("Company not found in web search results.");
+    }
+  }
+
+  if (v.website_live && prospect.company_website) {
+    try {
+      const scraped = await scrapeWebsite(prospect.company_website);
+      if (!scraped.error && scraped.content) {
+        const contactData = await extractContactsFromWebsite(prospect.company_name, scraped.content);
+        Object.assign(v, contactData);
+        if (!v.data_sources.includes("website_scrape")) v.data_sources.push("website_scrape");
+
+        if (contactData.extracted_contact_name && !prospect.first_name) {
+          const nameParts = contactData.extracted_contact_name.split(" ");
+          prospect.first_name = nameParts[0] || null;
+          prospect.last_name = nameParts.slice(1).join(" ") || null;
+          notes.push(`Contact name found on website: ${contactData.extracted_contact_name}`);
+        }
+        if (contactData.extracted_contact_role && !prospect.executive_role) {
+          prospect.executive_role = contactData.extracted_contact_role;
+        }
+        if (contactData.extracted_contact_email && !prospect.email) {
+          prospect.email = contactData.extracted_contact_email;
+          notes.push(`Email found on website: ${contactData.extracted_contact_email}`);
+        } else if (contactData.extracted_emails.length > 0 && !prospect.email) {
+          prospect.email = contactData.extracted_emails[0];
+          notes.push(`Email extracted from website: ${contactData.extracted_emails[0]}`);
+        }
+        if (contactData.extracted_contact_phone && !prospect.phone_number) {
+          prospect.phone_number = contactData.extracted_contact_phone;
+          notes.push(`Phone found on website: ${contactData.extracted_contact_phone}`);
+        } else if (contactData.extracted_phones.length > 0 && !prospect.phone_number) {
+          prospect.phone_number = contactData.extracted_phones[0];
+          notes.push(`Phone extracted from website: ${contactData.extracted_phones[0]}`);
+        }
+        if (contactData.extracted_social.linkedin && !prospect.linkedin_url) {
+          prospect.linkedin_url = contactData.extracted_social.linkedin;
+        }
+
+        const auditResult = await askGroq(
+          "You are a website UX/conversion auditor. Be concise.",
+          `Audit this website for "${prospect.company_name}" (${prospect.company_website}):\n` +
+          `Title: ${scraped.title}\nMeta: ${scraped.meta_description}\n` +
+          `Content (first 2000 chars): ${scraped.content?.slice(0, 2000)}\n\n` +
+          `Return JSON: { "summary": string (2-3 sentence audit), "website_status": "live"|"outdated"|"weak" }`
+        );
+        prospect.audit_summary = auditResult.summary || `Website title: ${scraped.title || "N/A"}. ${scraped.meta_description || ""}`;
+        prospect.website_status = auditResult.website_status || "live";
+      }
+    } catch (err) {
+      log.warn(`Website scrape/extract failed for ${prospect.company_name}`, { error: err.message });
+    }
+  }
+
+  v.email_format_valid = isValidEmail(prospect.email);
+  v.email_domain_matches_website = emailDomainMatchesWebsite(prospect.email, prospect.company_website);
+  v.phone_format_valid = isValidPhone(prospect.phone_number, prospect.country);
+
+  if (v.email_format_valid) notes.push("Email format valid.");
+  if (v.email_domain_matches_website) notes.push("Email domain matches company website.");
+  if (v.phone_format_valid) notes.push("Phone format valid.");
+
+  v.agent_notes = notes.join(" ");
+  return v;
+}
+
+// ---- Quality Scoring ----
+
+function calculateQualityScore(prospect, verification) {
+  let score = 0;
+  if (verification.website_live) score += 20;
+  if (verification.company_found_in_search) score += 25;
+  if (verification.email_format_valid) score += 10;
+  if (verification.email_domain_matches_website) score += 10;
+  if (verification.phone_format_valid) score += 5;
+  if (prospect.first_name && prospect.last_name) score += 10;
+  if (prospect.executive_role) score += 5;
+  if (verification.contacts_from_website) score += 15;
+  return score;
+}
+
+function statusFromQualityScore(score) {
+  if (score >= 60) return "discovered";
+  if (score >= 30) return "needs_review";
+  return "unverified";
+}
+
+// ---- Groq Fallback Discovery (last resort — generates plausible but unverified data) ----
+
+async function discoverViaGroqFallback(country, industry, limit) {
+  const n = Math.min(limit || 10, 15);
+  const cc = country || "US";
+  const countryNames = { US: "United States", GB: "United Kingdom", AE: "United Arab Emirates" };
+  const countryName = countryNames[cc] || cc;
+  const result = await askGroq(
+    "You are a B2B lead generation researcher. Return ONLY valid JSON.",
+    `Find ${n} real small-to-medium service businesses in ${countryName} (${cc})` +
+    `${industry ? ` in the "${industry}" industry` : ""}. ` +
+    `Return JSON: { "prospects": [{ "company_name": string, "company_website": string|null, "industry": string, "city": string }] }`
+  );
+  const list = result?.prospects || result?.businesses || [];
+  return list.slice(0, n).map(p => ({
+    company_name: p.company_name || "Unknown",
+    company_website: p.company_website || null,
+    country: cc,
+    industry: p.industry || industry || null,
+    city_or_region: p.city || null,
+    source_trace: "groq:llm-fallback",
+    data_sources: ["groq_llm"],
+  }));
+}
+
+// ---- Discovery (for POST /api/pipeline/discover) ----
 
 export async function discoverProspects(searchConfig) {
   const { country, industry, limit } = searchConfig;
@@ -498,6 +743,7 @@ export async function discoverProspects(searchConfig) {
   const errors = [];
 
   let bizData = [];
+  let source = "explorium";
   try {
     bizData = await discoverViaExplorium(country, industry, limit);
     log.info(`Explorium returned ${bizData.length} businesses`);
@@ -507,10 +753,24 @@ export async function discoverProspects(searchConfig) {
     errors.push(msg);
   }
 
-  if (bizData.length === 0) {
-    log.info("Explorium returned nothing, falling back to Groq LLM discovery");
+  if (bizData.length === 0 && BRAVE_KEY) {
+    log.info("Explorium returned nothing, falling back to Brave Search discovery");
+    source = "brave_search";
     try {
-      bizData = await discoverViaGroq(country, industry, limit);
+      bizData = await discoverViaBraveSearch(country, industry, limit);
+      log.info(`Brave Search returned ${bizData.length} businesses`);
+    } catch (err) {
+      const msg = `Brave Search discovery failed: ${err.message}`;
+      log.warn(msg);
+      errors.push(msg);
+    }
+  }
+
+  if (bizData.length === 0) {
+    log.info("No results from primary sources, using Groq LLM fallback (results will be verified)");
+    source = "groq_llm";
+    try {
+      bizData = await discoverViaGroqFallback(country, industry, limit);
       log.info(`Groq fallback returned ${bizData.length} businesses`);
     } catch (err) {
       const msg = `Groq fallback discovery failed: ${err.message}`;
@@ -519,25 +779,47 @@ export async function discoverProspects(searchConfig) {
     }
   }
 
+  if (bizData.length === 0) {
+    throw new Error(`Discovery found 0 prospects. Errors: ${errors.join("; ")}`);
+  }
+
   for (const biz of bizData) {
     try {
-      if (needsContactEnrichment(biz)) {
-        log.info(`Enriching contact data for ${biz.company_name}`);
-        const extra = await enrichContactViaGroq(biz);
-        Object.assign(biz, extra);
+      log.info(`Verifying & enriching: ${biz.company_name}`);
+      send("progress", { stage: "verifying", company: biz.company_name });
+
+      const verification = await verifyProspect(biz);
+      const qualityScore = calculateQualityScore(biz, verification);
+      const status = statusFromQualityScore(qualityScore);
+      verification.quality_score = qualityScore;
+
+      log.info(`${biz.company_name}: quality=${qualityScore}, status=${status}, website=${verification.website_live}, search=${verification.company_found_in_search}`);
+
+      if (qualityScore < 30) {
+        log.info(`Skipping ${biz.company_name} — quality score ${qualityScore} below threshold`);
+        errors.push(`Rejected ${biz.company_name}: quality score ${qualityScore}/100`);
+        continue;
       }
-      const prospect = createProspect({ ...biz, status: "discovered" });
+
+      const prospect = createProspect({
+        ...biz,
+        status,
+        quality_score: qualityScore,
+        verification,
+        data_sources: verification.data_sources,
+        website_status: biz.website_status || (verification.website_live ? "live" : "unknown"),
+      });
       await saveProspect(prospect);
       created.push(prospect);
-      log.info(`Saved prospect: ${prospect.first_name} ${prospect.last_name} at ${prospect.company_name} (${prospect.country}) — email: ${prospect.email ? "yes" : "no"}, phone: ${prospect.phone_number ? "yes" : "no"}`);
+      log.info(`Saved verified prospect: ${prospect.first_name || "?"} ${prospect.last_name || "?"} at ${prospect.company_name} (quality: ${qualityScore})`);
     } catch (err) {
-      log.error(`Failed to save prospect ${biz.company_name}: ${err.message}`);
-      errors.push(`Save failed for ${biz.company_name}: ${err.message}`);
+      log.error(`Failed to process prospect ${biz.company_name}: ${err.message}`);
+      errors.push(`Failed for ${biz.company_name}: ${err.message}`);
     }
   }
 
   if (created.length === 0 && errors.length > 0) {
-    throw new Error(`Discovery found 0 prospects. Errors: ${errors.join("; ")}`);
+    throw new Error(`Discovery verified 0 prospects. Errors: ${errors.join("; ")}`);
   }
 
   return created;
