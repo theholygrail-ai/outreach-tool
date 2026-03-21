@@ -14,17 +14,21 @@ import { buildSettingsSnapshot, runConnectorTest } from "./settings-lib.js";
 
 const log = createLogger("api");
 const app = express();
-const extraCorsOrigins = (process.env.CORS_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
-app.use(cors({
-  origin(origin, cb) {
-    if (!origin) return cb(null, true);
-    if (/^http:\/\/localhost:\d+$/.test(origin) || /^http:\/\/127\.0\.0\.1:\d+$/.test(origin)) return cb(null, true);
-    if (extraCorsOrigins.includes(origin)) return cb(null, true);
-    if (origin.endsWith(".vercel.app")) return cb(null, true);
-    cb(null, false);
-  },
-  credentials: true,
-}));
+
+const isLambda = !!process.env.AWS_LAMBDA_FUNCTION_NAME;
+if (!isLambda) {
+  const extraCorsOrigins = (process.env.CORS_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean);
+  app.use(cors({
+    origin(origin, cb) {
+      if (!origin) return cb(null, true);
+      if (/^http:\/\/localhost:\d+$/.test(origin) || /^http:\/\/127\.0\.0\.1:\d+$/.test(origin)) return cb(null, true);
+      if (extraCorsOrigins.includes(origin)) return cb(null, true);
+      if (origin.endsWith(".vercel.app")) return cb(null, true);
+      cb(null, false);
+    },
+    credentials: true,
+  }));
+}
 app.use(express.json({ limit: "5mb" }));
 
 // --- Health ---
