@@ -57,6 +57,8 @@ let eventSource = null;
 const listeners = new Set();
 let pollIntervalId = null;
 let pollRefCount = 0;
+let _lastPipelineStatus = null;
+let _lastActivityTs = 0;
 
 export function subscribeSSE(callback) {
   listeners.add(callback);
@@ -64,9 +66,17 @@ export function subscribeSSE(callback) {
   if (remote) {
     const tick = async () => {
       try {
-        await fetchPipelineStatus();
-        await fetchActivity(8);
-        for (const cb of listeners) cb("poll_refresh", {});
+        const ps = await fetchPipelineStatus();
+        const act = await fetchActivity(1);
+        const newStatus = ps.status || "idle";
+        const newTs = act[0]?.ts || 0;
+        const statusChanged = _lastPipelineStatus !== null && _lastPipelineStatus !== newStatus;
+        const activityChanged = _lastActivityTs !== 0 && newTs > _lastActivityTs;
+        _lastPipelineStatus = newStatus;
+        _lastActivityTs = newTs;
+        if (statusChanged || activityChanged) {
+          for (const cb of listeners) cb("poll_refresh", {});
+        }
       } catch {
         /* ignore */
       }
@@ -74,7 +84,7 @@ export function subscribeSSE(callback) {
     pollRefCount += 1;
     if (!pollIntervalId) {
       tick();
-      pollIntervalId = setInterval(tick, 6000);
+      pollIntervalId = setInterval(tick, 10000);
     }
     return () => {
       listeners.delete(callback);
