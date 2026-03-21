@@ -101,9 +101,28 @@ async function renderDashboard() {
       const btn = document.getElementById("btn-discover");
       btn.textContent = "Discovering..."; btn.disabled = true;
       try {
-        await api.triggerDiscovery({ country, limit: 10 });
+        const { id: runId } = await api.triggerDiscovery({ country, limit: 10 });
         btn.textContent = "Running...";
-        setTimeout(route, 5000);
+        const poll = setInterval(async () => {
+          try {
+            const st = await api.fetchPipelineStatus();
+            if (st.status !== "running") {
+              clearInterval(poll);
+              const runs = await api.fetchPipelineRuns();
+              const thisRun = runs.find(r => r.id === runId) || runs[0];
+              if (thisRun?.status === "failed") {
+                alert(`Discovery failed: ${thisRun.error || "unknown error"}`);
+              } else {
+                const count = thisRun?.prospects_processed || 0;
+                btn.textContent = count > 0 ? `Found ${count}!` : "Done (0 found)";
+              }
+              btn.disabled = false;
+              setTimeout(() => { btn.textContent = "Discover Prospects"; }, 3000);
+              route();
+            }
+          } catch { /* keep polling */ }
+        }, 2500);
+        setTimeout(() => { clearInterval(poll); btn.disabled = false; btn.textContent = "Discover Prospects"; route(); }, 120000);
       } catch (e) { alert(e.message); btn.textContent = "Discover Prospects"; btn.disabled = false; }
     });
 

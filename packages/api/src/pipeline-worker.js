@@ -359,36 +359,84 @@ Return JSON: { email_subject, email_body, whatsapp_message, linkedin_note, linke
 
 // ---- Discovery (for POST /api/pipeline/discover) ----
 
+async function discoverViaExplorium(country, industry, limit) {
+  const businesses = await mcpCall("fetch_businesses", {
+    country_code: country || "US",
+    company_size_max: 100,
+    limit: limit || 10,
+  });
+  const bizList = Array.isArray(businesses) ? businesses : businesses?.businesses || businesses?.results || [];
+  return bizList.slice(0, limit || 10).map(biz => ({
+    company_name: biz.company_name || biz.name || "Unknown",
+    company_website: biz.website || biz.domain || null,
+    country: country || biz.country || "US",
+    industry: biz.industry || biz.linkedin_category || industry || null,
+    company_size_estimate: biz.employee_count || biz.size || null,
+    source_trace: `explorium:${biz.business_id || biz.id || "unknown"}`,
+  }));
+}
+
+async function discoverViaGroq(country, industry, limit) {
+  const n = Math.min(limit || 10, 15);
+  const result = await askGroq(
+    "You are a B2B lead researcher. Return ONLY valid JSON.",
+    `Find ${n} real small-to-medium service businesses in country "${country || "US"}"${industry ? ` in the "${industry}" industry` : ""}. ` +
+    `These should be real-sounding businesses that likely need a professional website. ` +
+    `Return JSON: { "businesses": [{ "company_name": string, "industry": string, "company_website": string|null, "company_size_estimate": number|null, "city": string|null }] }`
+  );
+  const list = result?.businesses || [];
+  return list.slice(0, n).map(biz => ({
+    company_name: biz.company_name || "Unknown",
+    company_website: biz.company_website || null,
+    country: country || "US",
+    industry: biz.industry || industry || null,
+    company_size_estimate: biz.company_size_estimate || null,
+    city_or_region: biz.city || null,
+    source_trace: "groq:llm-discovery",
+  }));
+}
+
 export async function discoverProspects(searchConfig) {
   const { country, industry, limit } = searchConfig;
-  log.info("Discovering prospects via Explorium", { country, industry, limit });
+  log.info("Discovering prospects", { country, industry, limit });
   const created = [];
+  const errors = [];
 
+  let bizData = [];
   try {
-    const businesses = await mcpCall("fetch_businesses", {
-      country_code: country || "US",
-      company_size_max: 100,
-      limit: limit || 10,
-    });
+    bizData = await discoverViaExplorium(country, industry, limit);
+    log.info(`Explorium returned ${bizData.length} businesses`);
+  } catch (err) {
+    const msg = `Explorium discovery failed: ${err.message}`;
+    log.warn(msg);
+    errors.push(msg);
+  }
 
-    const bizList = Array.isArray(businesses) ? businesses : businesses?.businesses || businesses?.results || [];
-    log.info(`Explorium returned ${bizList.length} businesses`);
+  if (bizData.length === 0) {
+    log.info("Explorium returned nothing, falling back to Groq LLM discovery");
+    try {
+      bizData = await discoverViaGroq(country, industry, limit);
+      log.info(`Groq fallback returned ${bizData.length} businesses`);
+    } catch (err) {
+      const msg = `Groq fallback discovery failed: ${err.message}`;
+      log.error(msg);
+      errors.push(msg);
+    }
+  }
 
-    for (const biz of bizList.slice(0, limit || 10)) {
-      const prospect = createProspect({
-        company_name: biz.company_name || biz.name || "Unknown",
-        company_website: biz.website || biz.domain || null,
-        country: country || biz.country || "US",
-        industry: biz.industry || biz.linkedin_category || industry || null,
-        company_size_estimate: biz.employee_count || biz.size || null,
-        source_trace: `explorium:${biz.business_id || biz.id || "unknown"}`,
-        status: "discovered",
-      });
+  for (const biz of bizData) {
+    try {
+      const prospect = createProspect({ ...biz, status: "discovered" });
       await saveProspect(prospect);
       created.push(prospect);
+    } catch (err) {
+      log.error(`Failed to save prospect ${biz.company_name}: ${err.message}`);
+      errors.push(`Save failed for ${biz.company_name}: ${err.message}`);
     }
-  } catch (err) {
-    log.error("Explorium discovery failed", { error: err.message });
+  }
+
+  if (created.length === 0 && errors.length > 0) {
+    throw new Error(`Discovery found 0 prospects. Errors: ${errors.join("; ")}`);
   }
 
   return created;
@@ -404,7 +452,9 @@ export async function executePipelineRun(run) {
     if (run.config?.mode === "discover") {
       const created = await discoverProspects(run.config);
       run.prospects_processed = created.length;
-      await logActivity({ type: "discovery_completed", detail: `Discovered ${created.length} new prospects via Explorium` });
+      const source = created[0]?.source_trace?.startsWith("groq:") ? "Groq LLM" : "Explorium";
+      await logActivity({ type: "discovery_completed", detail: `Discovered ${created.length} new prospects via ${source}` });
+      send("progress", { discovered: created.length, source });
     } else {
       const prospects = await listProspects();
       const processable = prospects.filter(p => !["won", "lost", "suppressed", "sent", "responded", "meeting_booked"].includes(p.status));
