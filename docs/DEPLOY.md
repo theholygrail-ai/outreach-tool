@@ -1,24 +1,49 @@
 # Deploy: AWS API (Lambda) + Vercel (Web) + GitHub
 
-## 1. AWS — data + API
+Use AWS CLI profile **`astro-invest`**.
 
-1. Deploy DynamoDB/S3 (if not already):
-   ```bash
-   npm run deploy:infra --workspace infra -- OutreachTool-Data
-   ```
-2. Load secrets into the shell (same keys as local `.env`), then deploy the API stack:
-   ```bash
-   set AWS_PROFILE=astro-invest
-   set CDK_DEFAULT_REGION=us-east-1
-   npm run deploy:infra --workspace infra -- OutreachTool-Api
-   ```
-   On macOS/Linux use `export` instead of `set`.
+## 1. AWS — deploy all stacks (recommended)
 
-3. Copy **ApiFunctionUrl** from the CDK output. This is your public REST base URL (no trailing slash).
+From the repo root (PowerShell):
 
-4. **Configure secrets on both Lambdas** (same function names as in CDK: HTTP API + Pipeline worker): in the AWS Console → Lambda → Configuration → Environment variables, add the same keys you use locally (`GROQ_API_KEY`, `EXPLORIUM_API_KEY`, `SES_*`, `CALENDLY_*`, etc.). Do **not** commit API keys to git.
+```powershell
+$env:AWS_PROFILE = "astro-invest"
+$env:CDK_DEFAULT_REGION = "us-east-1"
+.\scripts\deploy-aws.ps1
+```
 
-5. Optional: set `PUBLIC_API_URL` on both functions to the Function URL (for Settings UI). Set **Calendly webhook** to `{ApiFunctionUrl}/api/webhooks/calendly` if you use webhooks.
+Or from `infra/`:
+
+```bash
+export AWS_PROFILE=astro-invest
+export CDK_DEFAULT_REGION=us-east-1
+npm run deploy
+```
+
+This deploys **OutreachTool-Billing**, **OutreachTool-Data** (DynamoDB + S3), and **OutreachTool-Api** (HTTP Lambda + Function URL + pipeline worker). Lambdas get **`DYNAMO_TABLE`**, **`S3_BUCKET`** (CDK asset bucket name), and **`PIPELINE_WORKER_FUNCTION_NAME`** in template; **API keys** are not in CloudFormation—add them after deploy.
+
+**Smoke test:**
+
+```powershell
+.\scripts\e2e-smoke.ps1 -BaseUrl "https://YOUR.lambda-url.us-east-1.on.aws"
+```
+
+**List Lambdas:**
+
+```powershell
+.\scripts\aws-list-lambdas.ps1
+```
+
+## 1b. AWS — deploy stacks individually (optional)
+
+1. Data: `npm run deploy:infra -w infra -- OutreachTool-Data`
+2. API: `npm run deploy:infra -w infra -- OutreachTool-Api` (set `AWS_PROFILE` / `CDK_DEFAULT_REGION` first)
+
+3. Copy **ApiFunctionUrl** from the CDK output (no trailing slash).
+
+4. **Configure secrets on both Lambdas** (HTTP API + pipeline worker): Lambda → Configuration → Environment variables — same keys as local `.env` (`GROQ_API_KEY`, `EXPLORIUM_API_KEY`, `SES_*`, `CALENDLY_*`, etc.). Do **not** commit API keys to git.
+
+5. Optional: set `PUBLIC_API_URL` on both functions to the Function URL. Calendly webhook: `{ApiFunctionUrl}/api/webhooks/calendly`.
 
 ## 2. Vercel — static dashboard (GitHub integration)
 

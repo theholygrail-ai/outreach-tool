@@ -13,4 +13,8 @@ const env = {
 
 new BillingStack(app, "OutreachTool-Billing", { env });
 const dataStack = new DataStack(app, "OutreachTool-Data", { env });
-new ApiStack(app, "OutreachTool-Api", { env, table: dataStack.table });
+new ApiStack(app, "OutreachTool-Api", {
+  env,
+  table: dataStack.table,
+  bucket: dataStack.bucket,
+});

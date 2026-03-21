@@ -2,6 +2,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import * as cdk from "aws-cdk-lib";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import { NodejsFunction, OutputFormat } from "aws-cdk-lib/aws-lambda-nodejs";
@@ -13,11 +14,12 @@ const repoRoot = path.join(__dirname, "../..");
  * Non-secret env only — API keys must be set in the AWS Lambda console (or SSM) after deploy
  * so they never appear in CloudFormation templates.
  */
-function buildLambdaEnv(tableName, options = {}) {
+function buildLambdaEnv(tableName, bucketName, options = {}) {
   const env = {
     NODE_ENV: "production",
     AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
     DYNAMO_TABLE: tableName,
+    S3_BUCKET: bucketName,
     SES_REGION: process.env.SES_REGION || "us-east-1",
   };
   if (options.pipelineWorkerName) {
@@ -30,11 +32,11 @@ export class ApiStack extends cdk.Stack {
   /**
    * @param {cdk.App} scope
    * @param {string} id
-   * @param {cdk.StackProps & { table: dynamodb.ITable }} props
+   * @param {cdk.StackProps & { table: dynamodb.ITable; bucket: s3.IBucket }} props
    */
   constructor(scope, id, props) {
     super(scope, id, props);
-    const { table } = props;
+    const { table, bucket } = props;
 
     const bundling = {
       format: OutputFormat.ESM,
@@ -52,10 +54,11 @@ export class ApiStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: cdk.Duration.minutes(15),
       memorySize: 1024,
-      environment: buildLambdaEnv(table.tableName),
+      environment: buildLambdaEnv(table.tableName, bucket.bucketName),
       bundling,
     });
     table.grantReadWriteData(workerFn);
+    bucket.grantReadWrite(workerFn);
     workerFn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["ses:SendEmail", "ses:SendRawEmail", "ses:ListEmailIdentities"],
@@ -69,10 +72,13 @@ export class ApiStack extends cdk.Stack {
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: cdk.Duration.seconds(29),
       memorySize: 512,
-      environment: buildLambdaEnv(table.tableName, { pipelineWorkerName: workerFn.functionName }),
+      environment: buildLambdaEnv(table.tableName, bucket.bucketName, {
+        pipelineWorkerName: workerFn.functionName,
+      }),
       bundling,
     });
     table.grantReadWriteData(apiFn);
+    bucket.grantReadWrite(apiFn);
     apiFn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["ses:SendEmail", "ses:SendRawEmail", "ses:ListEmailIdentities"],
@@ -96,5 +102,9 @@ export class ApiStack extends cdk.Stack {
       description: "Set VITE_API_URL on Vercel to this value (no trailing slash)",
     });
     new cdk.CfnOutput(this, "PipelineWorkerFnName", { value: workerFn.functionName });
+    new cdk.CfnOutput(this, "AssetBucketName", {
+      value: bucket.bucketName,
+      description: "S3 bucket for assets (also in Lambda env as S3_BUCKET)",
+    });
   }
 }

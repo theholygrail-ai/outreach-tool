@@ -24,6 +24,7 @@ Thumbs.db
 
 # AWS CDK
 infra/cdk.out/
+infra/cdk.out.tmp/
 
 # React Native
 packages/mobile/android/
