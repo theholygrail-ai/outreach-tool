@@ -1,8 +1,9 @@
 /** Base URL for API (empty = same origin / Vite proxy). Set VITE_API_URL on Vercel to Lambda Function URL. */
 function getApiBase() {
-  const u = import.meta.env.VITE_API_URL;
-  if (typeof u === "string" && u.trim().length > 0) return u.replace(/\/$/, "");
-  return "";
+  const raw = import.meta.env.VITE_API_URL;
+  if (typeof raw !== "string") return "";
+  const u = raw.trim().replace(/\/+$/, "");
+  return u.length > 0 ? u : "";
 }
 
 export function apiUrl(path) {
