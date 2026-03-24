@@ -79,8 +79,21 @@ export const config = {
     playwrightEnabled: process.env.PLAYWRIGHT_ENABLED === "1" || process.env.PLAYWRIGHT_ENABLED === "true",
     /** Minimum quality score after verify to be list-eligible */
     strictMinQuality: parseInt(process.env.STRICT_MIN_QUALITY, 10) || 45,
-    /** If true, require (email && phone) OR (email && linkedin_url) for display_eligible */
+    /** If false, skip contact-field requirements (quality only) */
     strictRequireContact: process.env.STRICT_REQUIRE_CONTACT !== "0",
+    /**
+     * email_only — require a syntactically valid email only.
+     * email_plus_alt — require (email && phone) OR (email && linkedin_url).
+     */
+    strictContactMode: process.env.STRICT_CONTACT_MODE === "email_only" ? "email_only" : "email_plus_alt",
+    abstractApiKey: process.env.ABSTRACT_API_KEY || null,
+    companiesHouseApiKey: process.env.COMPANIES_HOUSE_API_KEY || null,
+    /** Re-run full verify in pipeline when older than this many days */
+    verificationMaxAgeDays: parseInt(process.env.VERIFICATION_MAX_AGE_DAYS, 10) || 30,
+    /** Groq ranks regex-extracted emails (pick index only; no invented addresses). Set "0" to disable. */
+    agentEmailRanker: process.env.ENRICHMENT_AGENT_EMAIL_RANKER !== "0",
+    /** Structured data-quality insights on verification (facts-only prompt). Set "0" to disable. */
+    agentVerificationInsights: process.env.ENRICHMENT_AGENT_INSIGHTS !== "0",
   },
 };
 

@@ -7,6 +7,15 @@ import { createLogger } from "@outreach-tool/shared/logger";
 import { createProspect } from "@outreach-tool/shared/prospect-schema";
 import { deepEnrichProspect } from "./enrichment/deep-enrich.js";
 import { strictDisplayGate } from "./enrichment/strict-gate.js";
+import { takeEnrichmentSnapshot, buildFieldResolution } from "./enrichment/enrichment-snapshot.js";
+import { runCrossCheck } from "./enrichment/cross-check.js";
+import { calculateQualityScore } from "./enrichment/quality-score.js";
+import { resolveMxForEmail } from "./enrichment/providers/mx-dns.js";
+import { validateEmailAbstract } from "./enrichment/providers/abstract-email.js";
+import { searchCompaniesHouse } from "./enrichment/providers/companies-house.js";
+import { auditLinkedInAffiliation, extractAllLinkedInUrls, pickBestPersonLinkedInFromPage, parseLinkedInUrl } from "./enrichment/linkedin-audit.js";
+import { sanitizeGroqWebsiteContacts, agentRankEmailCandidates } from "./enrichment/grounding.js";
+import { runVerificationInsightsAgent } from "./enrichment/agent-insights.js";
 import { sendOutreachEmail, stripHtml, hasSenderIdentity } from "@outreach-tool/shared/ses-send";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -256,8 +265,48 @@ async function advanceProspect(prospect, runId) {
 }
 
 async function stageEnrich(prospect) {
-  log.info("Stage: ENRICH via Explorium MCP");
+  log.info("Stage: ENRICH (pipeline)");
   const updates = {};
+
+  const maxAgeMs = (config.enrichment?.verificationMaxAgeDays ?? 30) * 86400000;
+  const forceReverify = process.env.FORCE_REVERIFY === "1" || process.env.FORCE_REVERIFY === "true";
+  const verifiedAtRaw = prospect.verification?.verified_at;
+  const verifiedAt = verifiedAtRaw ? Date.parse(verifiedAtRaw) : NaN;
+  const stale = !Number.isFinite(verifiedAt) || Date.now() - verifiedAt > maxAgeMs;
+  const needsFullVerify =
+    forceReverify ||
+    !prospect.verification ||
+    prospect.verification.quality_score == null ||
+    stale;
+
+  if (needsFullVerify) {
+    log.info("Running deep enrich + verification (missing, stale, or FORCE_REVERIFY)", { prospect_id: prospect.id });
+    let enrichmentPages = [];
+    try {
+      const enriched = await deepEnrichProspect(prospect);
+      enrichmentPages = enriched.pages || [];
+      updates.enrichment_status = "complete";
+      updates.enrichment_details = enriched.enrichment_details || {};
+    } catch (enrErr) {
+      log.warn(`Deep enrich failed for pipeline prospect ${prospect.id}`, { error: enrErr.message });
+      updates.enrichment_status = "failed";
+      updates.enrichment_details = { errors: [enrErr.message] };
+    }
+
+    const verification = await verifyProspect(prospect, enrichmentPages.length ? { pages: enrichmentPages } : null);
+    const qualityScore = calculateQualityScore(prospect, verification);
+    verification.quality_score = qualityScore;
+    const gate = strictDisplayGate({ ...prospect, ...updates, quality_score: qualityScore }, verification);
+
+    updates.quality_score = qualityScore;
+    updates.verification = verification;
+    updates.data_sources = verification.data_sources;
+    updates.website_status = prospect.website_status || (verification.website_live ? "live" : "unknown");
+    updates.display_eligible = gate.display_eligible;
+    if (!gate.display_eligible) {
+      updates.notes = `${prospect.notes || ""}\n[Hidden from default list] ${gate.rejection_reason || "strict_gate"}`.trim();
+    }
+  }
 
   try {
     if (prospect.company_name) {
@@ -283,7 +332,8 @@ async function stageEnrich(prospect) {
     );
     updates.industry = groqData.industry || prospect.industry;
     updates.company_size_estimate = groqData.company_size_estimate || prospect.company_size_estimate;
-    updates.notes = (prospect.notes || "") + `\n[Groq fallback] ${groqData.summary || ""}`;
+    const baseNotes = updates.notes ?? prospect.notes ?? "";
+    updates.notes = `${baseNotes}\n[Groq fallback] ${groqData.summary || ""}`.trim();
   }
 
   return updates;
@@ -675,40 +725,89 @@ async function crossReferenceCompany(companyName, country) {
   }
 }
 
-async function extractContactsFromWebsite(companyName, websiteContent) {
-  if (!websiteContent || websiteContent.length < 50) return { contacts_from_website: false, extracted_emails: [], extracted_phones: [], extracted_social: {} };
+async function extractContactsFromWebsite(prospect, websiteContent) {
+  const companyName = prospect.company_name || "Company";
+  if (!websiteContent || websiteContent.length < 50) {
+    return {
+      contacts_from_website: false,
+      extracted_emails: [],
+      extracted_phones: [],
+      extracted_social: {},
+      extracted_linkedin_urls: [],
+      extracted_contact_name: null,
+      extracted_contact_role: null,
+      extracted_contact_email: null,
+      extracted_contact_phone: null,
+      extracted_grounding_dropped: [],
+    };
+  }
 
   const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
   const phoneRegex = /(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}/g;
   const rawEmails = [...new Set((websiteContent.match(emailRegex) || []).filter(e => !e.includes("example.com") && !e.includes("sentry")))].slice(0, 5);
   const rawPhones = [...new Set((websiteContent.match(phoneRegex) || []).filter(p => p.replace(/\D/g, "").length >= 10))].slice(0, 5);
 
-  const social = {};
-  const linkedinMatch = websiteContent.match(/https?:\/\/(?:www\.)?linkedin\.com\/(?:company|in)\/[^\s"'<>]+/i);
-  if (linkedinMatch) social.linkedin = linkedinMatch[0];
+  const allLi = extractAllLinkedInUrls(websiteContent);
+
   const fbMatch = websiteContent.match(/https?:\/\/(?:www\.)?facebook\.com\/[^\s"'<>]+/i);
-  if (fbMatch) social.facebook = fbMatch[0];
   const twMatch = websiteContent.match(/https?:\/\/(?:www\.)?(?:twitter|x)\.com\/[^\s"'<>]+/i);
-  if (twMatch) social.twitter = twMatch[0];
 
   let groqContacts = {};
   try {
     groqContacts = await askGroq(
-      "You are a contact information extractor. Extract ONLY information that is explicitly present in the provided text. Do NOT invent any data.",
-      `Extract contact information for "${companyName}" from this website content:\n${websiteContent.slice(0, 3000)}\n\n` +
-      `Return JSON: { "contact_name": string|null (owner/director name if found), "contact_role": string|null, "contact_email": string|null, "contact_phone": string|null }`
+      "You extract contact fields from website text only. Rules: use null unless the exact value appears in the excerpt " +
+        "(same spelling for email/phone; name tokens must appear; role phrase must appear verbatim). " +
+        "Never infer from company type or guess generic addresses.",
+      `Company label: "${companyName}"\n\nWebsite text excerpt:\n${websiteContent.slice(0, 3000)}\n\n` +
+        `Return JSON only: { "contact_name": string|null, "contact_role": string|null, "contact_email": string|null, "contact_phone": string|null }`,
     );
   } catch { /* skip Groq extraction if it fails */ }
 
+  const grounded = sanitizeGroqWebsiteContacts(groqContacts, websiteContent);
+  const extracted_grounding_dropped = grounded.grounding_dropped || [];
+  delete grounded.grounding_dropped;
+  groqContacts = { ...groqContacts, ...grounded };
+
+  let rankedEmails = [...rawEmails];
+  if (rankedEmails.length > 1 && config.enrichment?.agentEmailRanker !== false && config.groq?.apiKey) {
+    const idx = await agentRankEmailCandidates(websiteContent, rankedEmails, askGroq);
+    const chosen = rankedEmails[idx];
+    rankedEmails = [chosen, ...rankedEmails.filter((_, i) => i !== idx)];
+  }
+
+  let mergeFirst = prospect.first_name || null;
+  let mergeLast = prospect.last_name || null;
+  if (groqContacts.contact_name) {
+    const parts = String(groqContacts.contact_name).trim().split(/\s+/).filter(Boolean);
+    if (!mergeFirst && parts[0]) mergeFirst = parts[0];
+    if (!mergeLast && parts.length > 1) mergeLast = parts.slice(1).join(" ");
+  }
+  const prospectForLi = {
+    ...prospect,
+    first_name: mergeFirst,
+    last_name: mergeLast,
+  };
+  const bestPersonLi = pickBestPersonLinkedInFromPage(allLi, prospectForLi, websiteContent);
+  const companyLi = allLi.find(u => parseLinkedInUrl(u).type === "company") || null;
+
+  const social = {};
+  if (bestPersonLi) social.linkedin = bestPersonLi;
+  if (companyLi) social.linkedin_company = companyLi;
+  if (fbMatch) social.facebook = fbMatch[0];
+  if (twMatch) social.twitter = twMatch[0];
+
   return {
-    contacts_from_website: rawEmails.length > 0 || rawPhones.length > 0 || !!groqContacts.contact_name,
-    extracted_emails: rawEmails,
+    contacts_from_website:
+      rankedEmails.length > 0 || rawPhones.length > 0 || !!groqContacts.contact_name || !!bestPersonLi,
+    extracted_emails: rankedEmails,
     extracted_phones: rawPhones,
     extracted_social: social,
+    extracted_linkedin_urls: allLi,
     extracted_contact_name: groqContacts.contact_name || null,
     extracted_contact_role: groqContacts.contact_role || null,
     extracted_contact_email: groqContacts.contact_email || null,
     extracted_contact_phone: groqContacts.contact_phone || null,
+    extracted_grounding_dropped,
   };
 }
 
@@ -718,14 +817,24 @@ async function extractContactsFromWebsite(companyName, websiteContent) {
  */
 async function verifyProspect(prospect, enrichmentContext = null) {
   log.info(`Verifying prospect: ${prospect.company_name}`);
+  const enrichment_snapshot = takeEnrichmentSnapshot(prospect);
+  /** @type {Record<string, boolean>} */
+  const filledFromWebsite = {};
+
   const v = {
     website_live: false, website_http_status: 0, website_title: null, website_description: null,
     company_found_in_search: false, company_search_url: null, company_search_snippet: null,
-    contacts_from_website: false, extracted_emails: [], extracted_phones: [], extracted_social: {},
+    contacts_from_website: false,
+    extracted_emails: [],
+    extracted_phones: [],
+    extracted_social: {},
+    extracted_linkedin_urls: [],
+    extracted_grounding_dropped: [],
     email_format_valid: false, email_domain_matches_website: false, phone_format_valid: false,
     data_sources: [...(prospect.data_sources || [])],
     verified_at: new Date().toISOString(),
     agent_notes: "",
+    enrichment_snapshot,
   };
   const notes = [];
 
@@ -751,9 +860,9 @@ async function verifyProspect(prospect, enrichmentContext = null) {
   }
 
   const useEnrichmentPages = enrichmentContext?.pages?.length > 0;
+  let contentForContacts = "";
   if (v.website_live && prospect.company_website) {
     try {
-      let contentForContacts = "";
       let scrapedTitle = "";
       let scrapedMeta = "";
       if (useEnrichmentPages) {
@@ -773,34 +882,45 @@ async function verifyProspect(prospect, enrichmentContext = null) {
       }
 
       if (contentForContacts) {
-        const contactData = await extractContactsFromWebsite(prospect.company_name, contentForContacts);
+        const contactData = await extractContactsFromWebsite(prospect, contentForContacts);
         Object.assign(v, contactData);
+        if (contactData.extracted_grounding_dropped?.length) {
+          notes.push(`Grounding dropped unverified Groq fields: ${contactData.extracted_grounding_dropped.join(", ")}`);
+        }
 
         if (contactData.extracted_contact_name && !prospect.first_name) {
           const nameParts = contactData.extracted_contact_name.split(" ");
           prospect.first_name = nameParts[0] || null;
           prospect.last_name = nameParts.slice(1).join(" ") || null;
+          filledFromWebsite.first_name = true;
+          filledFromWebsite.last_name = true;
           notes.push(`Contact name found on website: ${contactData.extracted_contact_name}`);
         }
         if (contactData.extracted_contact_role && !prospect.executive_role) {
           prospect.executive_role = contactData.extracted_contact_role;
+          filledFromWebsite.executive_role = true;
         }
         if (contactData.extracted_contact_email && !prospect.email) {
           prospect.email = contactData.extracted_contact_email;
+          filledFromWebsite.email = true;
           notes.push(`Email found on website: ${contactData.extracted_contact_email}`);
         } else if (contactData.extracted_emails.length > 0 && !prospect.email) {
           prospect.email = contactData.extracted_emails[0];
+          filledFromWebsite.email = true;
           notes.push(`Email extracted from website: ${contactData.extracted_emails[0]}`);
         }
         if (contactData.extracted_contact_phone && !prospect.phone_number) {
           prospect.phone_number = contactData.extracted_contact_phone;
+          filledFromWebsite.phone_number = true;
           notes.push(`Phone found on website: ${contactData.extracted_contact_phone}`);
         } else if (contactData.extracted_phones.length > 0 && !prospect.phone_number) {
           prospect.phone_number = contactData.extracted_phones[0];
+          filledFromWebsite.phone_number = true;
           notes.push(`Phone extracted from website: ${contactData.extracted_phones[0]}`);
         }
         if (contactData.extracted_social.linkedin && !prospect.linkedin_url) {
           prospect.linkedin_url = contactData.extracted_social.linkedin;
+          filledFromWebsite.linkedin_url = true;
         }
 
         const auditChunk = contentForContacts.slice(0, 2000);
@@ -819,6 +939,23 @@ async function verifyProspect(prospect, enrichmentContext = null) {
     }
   }
 
+  /** @type {Record<string, boolean>} */
+  const auditCleared = {};
+  const liAudit = await auditLinkedInAffiliation(prospect, contentForContacts, askGroq);
+  v.linkedin_audit = liAudit;
+  if (liAudit.company_url) {
+    v.linkedin_company_page = liAudit.company_url;
+  }
+  if (liAudit.action === "clear" && prospect.linkedin_url) {
+    auditCleared.linkedin_url = true;
+    prospect.linkedin_url = null;
+    delete filledFromWebsite.linkedin_url;
+    notes.push(`LinkedIn removed after affiliation audit: ${liAudit.reason}`);
+  }
+  if (liAudit.status === "verified" && !v.data_sources.includes("linkedin_affiliation_audit")) {
+    v.data_sources.push("linkedin_affiliation_audit");
+  }
+
   v.email_format_valid = isValidEmail(prospect.email);
   v.email_domain_matches_website = emailDomainMatchesWebsite(prospect.email, prospect.company_website);
   v.phone_format_valid = isValidPhone(prospect.phone_number, prospect.country);
@@ -827,23 +964,86 @@ async function verifyProspect(prospect, enrichmentContext = null) {
   if (v.email_domain_matches_website) notes.push("Email domain matches company website.");
   if (v.phone_format_valid) notes.push("Phone format valid.");
 
+  v.field_resolution = buildFieldResolution(enrichment_snapshot, prospect, filledFromWebsite, auditCleared);
+
+  let mxResult = { ok: false, mx_hosts: [] };
+  if (prospect.email) {
+    mxResult = await resolveMxForEmail(prospect.email);
+    v.email_domain_mx_ok = mxResult.ok;
+    if (mxResult.ok) notes.push(`MX records found for email domain (${mxResult.mx_hosts[0] || "ok"}).`);
+    else notes.push(`No MX or DNS error for email domain: ${mxResult.error || "unknown"}.`);
+  } else {
+    v.email_domain_mx_ok = false;
+  }
+
+  let abstractResult = null;
+  if (config.enrichment?.abstractApiKey && prospect.email) {
+    abstractResult = await validateEmailAbstract(prospect.email);
+    v.abstract_email = abstractResult;
+    if (abstractResult && !abstractResult.error && abstractResult.is_disposable_email?.value === true) {
+      notes.push("Abstract: disposable email domain flagged.");
+    }
+    if (!v.data_sources.includes("abstract_email") && abstractResult && !abstractResult.error) {
+      v.data_sources.push("abstract_email");
+    }
+  }
+
+  let registryMatch = false;
+  if (prospect.country === "GB" && config.enrichment?.companiesHouseApiKey && prospect.company_name) {
+    const ch = await searchCompaniesHouse(prospect.company_name);
+    registryMatch = !!ch.matched;
+    v.company_registry_match = registryMatch;
+    v.company_registry = ch.title ? { title: ch.title, company_number: ch.company_number } : null;
+    if (registryMatch) {
+      notes.push(`Companies House match: ${ch.title}`);
+      if (!v.data_sources.includes("companies_house")) v.data_sources.push("companies_house");
+    }
+  } else {
+    v.company_registry_match = false;
+  }
+
+  v.cross_checks = runCrossCheck({
+    snapshot: enrichment_snapshot,
+    prospect,
+    extracted_emails: v.extracted_emails,
+    extracted_phones: v.extracted_phones,
+    extracted_social: v.extracted_social,
+    extracted_contact_email: v.extracted_contact_email,
+    extracted_contact_phone: v.extracted_contact_phone,
+    extracted_contact_name: v.extracted_contact_name,
+    email_domain_mx_ok: v.email_domain_mx_ok,
+    abstract_email: abstractResult,
+    company_registry_match: registryMatch,
+    linkedin_audit: v.linkedin_audit,
+  });
+
+  if (config.groq?.apiKey && config.enrichment?.agentVerificationInsights !== false) {
+    const facts = {
+      company_name: prospect.company_name,
+      country: prospect.country,
+      website_live: v.website_live,
+      company_found_in_search: v.company_found_in_search,
+      contacts_from_website: v.contacts_from_website,
+      email_format_valid: v.email_format_valid,
+      email_domain_matches_website: v.email_domain_matches_website,
+      phone_format_valid: v.phone_format_valid,
+      has_email: !!prospect.email,
+      has_phone: !!prospect.phone_number,
+      has_linkedin_person: !!prospect.linkedin_url,
+      linkedin_audit_status: v.linkedin_audit?.status,
+      data_validity_score: v.cross_checks?.data_validity_score,
+      cross_check_signals: v.cross_checks?.signals,
+      grounding_dropped_fields: v.extracted_grounding_dropped,
+      field_resolution: v.field_resolution
+        ? { email: v.field_resolution.email, phone_number: v.field_resolution.phone_number, linkedin_url: v.field_resolution.linkedin_url }
+        : null,
+    };
+    v.enrichment_agent_insights = await runVerificationInsightsAgent(facts, askGroq);
+    if (!v.data_sources.includes("enrichment_agent_insights")) v.data_sources.push("enrichment_agent_insights");
+  }
+
   v.agent_notes = notes.join(" ");
   return v;
-}
-
-// ---- Quality Scoring ----
-
-function calculateQualityScore(prospect, verification) {
-  let score = 0;
-  if (verification.website_live) score += 20;
-  if (verification.company_found_in_search) score += 25;
-  if (verification.email_format_valid) score += 10;
-  if (verification.email_domain_matches_website) score += 10;
-  if (verification.phone_format_valid) score += 5;
-  if (prospect.first_name && prospect.last_name) score += 10;
-  if (prospect.executive_role) score += 5;
-  if (verification.contacts_from_website) score += 15;
-  return score;
 }
 
 function statusFromQualityScore(score) {

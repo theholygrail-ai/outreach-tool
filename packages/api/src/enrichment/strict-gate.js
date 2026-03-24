@@ -1,5 +1,9 @@
 import { config } from "@outreach-tool/shared/config";
 
+function isValidEmailFormat(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || "");
+}
+
 /**
  * After enrichment + verification, decide if prospect should appear in default list.
  * @param {object} prospect
@@ -17,9 +21,17 @@ export function strictDisplayGate(prospect, verification) {
     const email = prospect.email?.trim();
     const phone = prospect.phone_number?.trim();
     const li = prospect.linkedin_url?.trim();
-    const hasPair = (email && phone) || (email && li);
-    if (!hasPair) {
-      return { display_eligible: false, rejection_reason: "missing_required_contact_fields" };
+    const mode = config.enrichment?.strictContactMode || "email_plus_alt";
+
+    if (mode === "email_only") {
+      if (!email || !isValidEmailFormat(email)) {
+        return { display_eligible: false, rejection_reason: "missing_required_contact_fields" };
+      }
+    } else {
+      const hasPair = (email && phone) || (email && li);
+      if (!hasPair) {
+        return { display_eligible: false, rejection_reason: "missing_required_contact_fields" };
+      }
     }
   }
 

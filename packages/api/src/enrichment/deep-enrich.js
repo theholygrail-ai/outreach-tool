@@ -5,6 +5,7 @@ import { config } from "@outreach-tool/shared/config";
 import { createLogger } from "@outreach-tool/shared/logger";
 import OpenAI from "openai";
 import { firecrawlScrape } from "./firecrawl-client.js";
+import { emailLiteralInText, phoneDigitsInText, personNameInText, rolePhraseInText } from "./grounding.js";
 
 const log = createLogger("deep-enrich");
 const groq = new OpenAI({ apiKey: config.groq.apiKey, baseURL: config.groq.baseURL });
@@ -108,7 +109,13 @@ async function askGroqFields(companyName, excerpts) {
     max_tokens: 2048,
     response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: "You extract contact data from website excerpts. Never invent emails or phones." },
+      {
+        role: "system",
+        content:
+          "You extract contact data from website excerpts. Never invent emails, phone numbers, names, or URLs. " +
+          "If a value is not literally present or unambiguously quoted in the excerpts, use null. " +
+          "field_sources.snippet must be a verbatim substring from the excerpts for every non-null field.",
+      },
       { role: "user", content: prompt },
     ],
   });
@@ -140,23 +147,43 @@ function applyProvenance(prospect, fields, fieldSources, combinedText) {
     }
     if (src?.url && combinedText.includes(String(val).trim())) {
       prospect[key] = prospect[key] || val;
+      return;
+    }
+    if (key === "email" && emailLiteralInText(val, combinedText)) {
+      prospect[key] = prospect[key] || val;
+      return;
+    }
+    if (key === "phone_number" && phoneDigitsInText(val, combinedText)) {
+      prospect[key] = prospect[key] || val;
     }
   };
 
   merge("email", fields.email, "email");
   merge("phone_number", fields.phone, "phone");
   if (fields.first_name && fields.last_name) {
+    const full = `${fields.first_name} ${fields.last_name}`;
     const src = fieldSources?.first_name || fieldSources?.last_name;
-    if (!src?.snippet || snippetInText(src.snippet, lower)) {
+    if (src?.snippet && snippetInText(src.snippet, lower)) {
+      prospect.first_name = prospect.first_name || fields.first_name;
+      prospect.last_name = prospect.last_name || fields.last_name;
+    } else if (personNameInText(full, combinedText)) {
       prospect.first_name = prospect.first_name || fields.first_name;
       prospect.last_name = prospect.last_name || fields.last_name;
     }
   }
-  if (fields.executive_role && (!fieldSources?.executive_role?.snippet || snippetInText(fieldSources.executive_role.snippet, lower))) {
-    prospect.executive_role = prospect.executive_role || fields.executive_role;
+  if (fields.executive_role) {
+    const src = fieldSources?.executive_role;
+    if (src?.snippet && snippetInText(src.snippet, lower)) {
+      prospect.executive_role = prospect.executive_role || fields.executive_role;
+    } else if (rolePhraseInText(fields.executive_role, combinedText)) {
+      prospect.executive_role = prospect.executive_role || fields.executive_role;
+    }
   }
-  if (fields.linkedin_url && combinedText.includes("linkedin.com")) {
-    prospect.linkedin_url = prospect.linkedin_url || fields.linkedin_url;
+  if (fields.linkedin_url) {
+    const u = String(fields.linkedin_url).replace(/^https?:\/\/(www\.)?/i, "").toLowerCase();
+    if (u.includes("linkedin.com") && lower.replace(/\s/g, "").includes(u.replace(/\s/g, ""))) {
+      prospect.linkedin_url = prospect.linkedin_url || fields.linkedin_url;
+    }
   }
 
   // Regex backup: any email in combined text

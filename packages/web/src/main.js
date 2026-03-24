@@ -456,6 +456,12 @@ async function openProspectModal(id) {
                 ${checkRow("Phone format valid", v.phone_format_valid, p.phone_number || "No phone")}
                 ${checkRow("Has contact name", !!(p.first_name && p.last_name), p.first_name ? `${p.first_name} ${p.last_name}` : "Missing")}
                 ${checkRow("Has role/title", !!p.executive_role, p.executive_role || "Missing")}
+                ${v.linkedin_audit && v.linkedin_audit.status !== "no_url" ? checkRow(
+                  "LinkedIn person affiliation",
+                  v.linkedin_audit.status === "verified",
+                  v.linkedin_audit.reason || v.linkedin_audit.status || "",
+                ) : ""}
+                ${v.linkedin_company_page ? checkRow("Company LinkedIn (page)", true, v.linkedin_company_page) : ""}
               </div>
               ${(v.extracted_emails?.length || v.extracted_phones?.length || Object.keys(v.extracted_social || {}).length) ? `
               <div class="audit-extracted">
@@ -464,6 +470,7 @@ async function openProspectModal(id) {
                 ${v.extracted_phones?.length ? `<div class="audit-field"><label>Phones from website</label><div class="mono">${v.extracted_phones.map(ph => esc(ph)).join(", ")}</div></div>` : ""}
                 ${Object.keys(v.extracted_social || {}).length ? `<div class="audit-field"><label>Social links</label><div>${Object.entries(v.extracted_social).map(([k, url]) => `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(k)}</a>`).join(" · ")}</div></div>` : ""}
               </div>` : ""}
+              ${v.enrichment_agent_insights?.summary ? `<div class="audit-insights"><h3>Enrichment agent insights</h3><p class="audit-text">${esc(v.enrichment_agent_insights.summary)}</p>${(v.enrichment_agent_insights.data_risks || []).length ? `<div class="audit-field"><label>Data risks</label><ul>${v.enrichment_agent_insights.data_risks.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}${(v.enrichment_agent_insights.recommended_follow_ups || []).length ? `<div class="audit-field"><label>Suggested follow-ups</label><ul>${v.enrichment_agent_insights.recommended_follow_ups.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}</div>` : ""}
               ${v.agent_notes ? `<div class="audit-notes"><h3>Agent Notes</h3><pre class="audit-text">${esc(v.agent_notes)}</pre></div>` : ""}
               ${(p.data_sources || []).length ? `<div class="audit-sources"><h3>Data Sources</h3><div class="source-tags">${p.data_sources.map(s => `<span class="source-tag">${esc(s.replace(/_/g, " "))}</span>`).join("")}</div></div>` : ""}
               ${p.audit_summary ? `<div class="audit-ux"><h3>Website UX Audit</h3><pre class="audit-text">${esc(p.audit_summary)}</pre></div>` : ""}

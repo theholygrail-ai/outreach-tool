@@ -5,6 +5,7 @@ vi.mock("@outreach-tool/shared/config", () => ({
     enrichment: {
       strictMinQuality: 50,
       strictRequireContact: true,
+      strictContactMode: "email_plus_alt",
     },
   },
 }));
