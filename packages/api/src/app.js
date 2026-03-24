@@ -139,7 +139,10 @@ app.get("/api/prospects/:id", async (req, res) => {
 
 app.post("/api/prospects", async (req, res) => {
   try {
-    const prospect = createProspect(req.body);
+    const prospect = createProspect({
+      ...req.body,
+      list_ready: req.body.list_ready === true,
+    });
     await db.saveProspect(prospect);
     await db.logActivity({ type: "prospect_created", detail: `Created ${prospect.first_name} ${prospect.last_name} at ${prospect.company_name || ""}` });
     broadcast("prospect_created", prospect);
@@ -188,7 +191,10 @@ app.post("/api/prospects/import", async (req, res) => {
     if (!Array.isArray(rows)) return res.status(400).json({ error: "rows array required" });
     const created = [];
     for (const row of rows) {
-      const prospect = createProspect(row);
+      const prospect = createProspect({
+        ...row,
+        list_ready: row.list_ready === true,
+      });
       await db.saveProspect(prospect);
       created.push(prospect);
     }

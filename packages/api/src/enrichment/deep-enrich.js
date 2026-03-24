@@ -6,6 +6,8 @@ import { createLogger } from "@outreach-tool/shared/logger";
 import OpenAI from "openai";
 import { firecrawlScrape } from "./firecrawl-client.js";
 import { emailLiteralInText, phoneDigitsInText, personNameInText, rolePhraseInText } from "./grounding.js";
+import { runVendorEnrichment } from "./third-party-enrich.js";
+import { brightdataScrapeUrl } from "./providers/brightdata.js";
 
 const log = createLogger("deep-enrich");
 const groq = new OpenAI({ apiKey: config.groq.apiKey, baseURL: config.groq.baseURL });
@@ -203,9 +205,17 @@ export async function deepEnrichProspect(prospect) {
     errors: [],
     used_playwright: false,
     used_firecrawl: false,
+    used_brightdata: false,
+    third_party: null,
   };
   const pages = [];
   const maxPages = config.enrichment?.maxPages ?? 8;
+
+  try {
+    details.third_party = await runVendorEnrichment(prospect);
+  } catch (err) {
+    details.errors.push(`vendor_enrich: ${err.message}`);
+  }
 
   const origin = normalizeOrigin(prospect.company_website);
   if (!origin) {
@@ -223,6 +233,7 @@ export async function deepEnrichProspect(prospect) {
 
   const urls = [...toFetch].slice(0, maxPages);
 
+  let brightdataUsedForProspect = false;
   for (const url of urls) {
     let row = await fetchStaticPage(url);
     if (row.text && row.text.length < 120 && config.firecrawl?.apiKey) {
@@ -237,6 +248,23 @@ export async function deepEnrichProspect(prospect) {
       if (pw?.text?.length) {
         row = { ...pw, url };
         details.used_playwright = true;
+      }
+    }
+    if (
+      (!row.text || row.text.length < 80) &&
+      !brightdataUsedForProspect &&
+      config.enrichment?.brightdataApiToken &&
+      config.enrichment?.brightdataZone
+    ) {
+      const bd = await brightdataScrapeUrl(url);
+      if (!bd.skipped && bd.html) {
+        const text = htmlToText(bd.html).slice(0, 8000);
+        if (text.length > 80) {
+          const title = bd.html.match(/<title[^>]*>(.*?)<\/title>/i)?.[1]?.trim() || row.title || "";
+          row = { url, title, text, source: "brightdata" };
+          details.used_brightdata = true;
+          brightdataUsedForProspect = true;
+        }
       }
     }
     if (row.text?.length) {

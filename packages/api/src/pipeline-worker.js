@@ -12,6 +12,7 @@ import { runCrossCheck } from "./enrichment/cross-check.js";
 import { calculateQualityScore } from "./enrichment/quality-score.js";
 import { resolveMxForEmail } from "./enrichment/providers/mx-dns.js";
 import { validateEmailAbstract } from "./enrichment/providers/abstract-email.js";
+import { hunterVerifyEmail } from "./enrichment/providers/hunter.js";
 import { searchCompaniesHouse } from "./enrichment/providers/companies-house.js";
 import { auditLinkedInAffiliation, extractAllLinkedInUrls, pickBestPersonLinkedInFromPage, parseLinkedInUrl } from "./enrichment/linkedin-audit.js";
 import { sanitizeGroqWebsiteContacts, agentRankEmailCandidates } from "./enrichment/grounding.js";
@@ -336,6 +337,7 @@ async function stageEnrich(prospect) {
     updates.notes = `${baseNotes}\n[Groq fallback] ${groqData.summary || ""}`.trim();
   }
 
+  updates.list_ready = true;
   return updates;
 }
 
@@ -988,6 +990,17 @@ async function verifyProspect(prospect, enrichmentContext = null) {
     }
   }
 
+  if (config.enrichment?.hunterApiKey && prospect.email) {
+    const hv = await hunterVerifyEmail(prospect.email);
+    v.hunter_email_verification = hv.skipped ? null : hv.error ? { error: hv.error } : hv.data;
+    if (hv.data && !hv.error) {
+      notes.push(`Hunter email status: ${hv.data.status || hv.data.result || "checked"}.`);
+      if (!v.data_sources.includes("hunter_verify")) v.data_sources.push("hunter_verify");
+    } else if (hv.error) {
+      notes.push(`Hunter verifier error: ${hv.error}.`);
+    }
+  }
+
   let registryMatch = false;
   if (prospect.country === "GB" && config.enrichment?.companiesHouseApiKey && prospect.company_name) {
     const ch = await searchCompaniesHouse(prospect.company_name);
@@ -1176,6 +1189,7 @@ export async function discoverProspects(searchConfig) {
         data_sources: verification.data_sources,
         website_status: biz.website_status || (verification.website_live ? "live" : "unknown"),
         display_eligible: gate.display_eligible,
+        list_ready: true,
         notes,
       });
       await saveProspect(prospect);

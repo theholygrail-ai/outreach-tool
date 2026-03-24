@@ -94,6 +94,18 @@ export const config = {
     agentEmailRanker: process.env.ENRICHMENT_AGENT_EMAIL_RANKER !== "0",
     /** Structured data-quality insights on verification (facts-only prompt). Set "0" to disable. */
     agentVerificationInsights: process.env.ENRICHMENT_AGENT_INSIGHTS !== "0",
+    /** Apollo People Enrichment — https://docs.apollo.io/docs/create-api-key */
+    apolloApiKey: process.env.APOLLO_API_KEY || null,
+    /** Consumes credits when true — personal work emails where policy allows */
+    apolloRevealPersonalEmails: process.env.APOLLO_REVEAL_PERSONAL_EMAILS === "1",
+    /** Hunter.io — domain search / finder / verifier */
+    hunterApiKey: process.env.HUNTER_API_KEY || null,
+    /**
+     * Bright Data Web Unlocker (same API as Python SDK sync mode: POST /request).
+     * Set BRIGHTDATA_ZONE to your Web Unlocker zone name from the Bright Data control panel.
+     */
+    brightdataApiToken: process.env.BRIGHTDATA_API_TOKEN || null,
+    brightdataZone: process.env.BRIGHTDATA_ZONE || null,
   },
 };
 

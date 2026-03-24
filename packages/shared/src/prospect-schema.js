@@ -36,6 +36,7 @@ export const PROSPECT_FIELDS = [
   "enrichment_status",
   "enrichment_details",
   "display_eligible",
+  "list_ready",
   "created_at",
   "updated_at",
 ];
@@ -76,12 +77,17 @@ export function createProspect(data = {}) {
     enrichment_status: data.enrichment_status ?? null,
     enrichment_details: data.enrichment_details ?? null,
     display_eligible: data.display_eligible !== undefined ? data.display_eligible : undefined,
+    list_ready: data.list_ready !== undefined ? data.list_ready : undefined,
     created_at: data.created_at || now,
     updated_at: now,
   };
 }
 
-/** Legacy rows have no display_eligible — treat as visible in lists */
+/**
+ * Default list: hide rows still in pipeline (list_ready === false).
+ * Legacy rows omit list_ready — treat as ready for visibility.
+ */
 export function isProspectListVisible(p) {
+  if (p.list_ready === false) return false;
   return p.display_eligible !== false;
 }

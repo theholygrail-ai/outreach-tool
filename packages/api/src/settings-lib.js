@@ -61,6 +61,25 @@ export function buildSettingsSnapshot() {
       keyMasked: maskSecret(config.firecrawl?.apiKey),
     },
     {
+      id: "apollo",
+      label: "Apollo.io",
+      configured: !!config.enrichment?.apolloApiKey,
+      keyMasked: maskSecret(config.enrichment?.apolloApiKey),
+    },
+    {
+      id: "hunter",
+      label: "Hunter.io",
+      configured: !!config.enrichment?.hunterApiKey,
+      keyMasked: maskSecret(config.enrichment?.hunterApiKey),
+    },
+    {
+      id: "brightdata",
+      label: "Bright Data (Web Unlocker)",
+      configured: !!(config.enrichment?.brightdataApiToken && config.enrichment?.brightdataZone),
+      keyMasked: maskSecret(config.enrichment?.brightdataApiToken),
+      zone: config.enrichment?.brightdataZone || null,
+    },
+    {
       id: "vercel",
       label: "Vercel",
       configured: !!config.vercel?.token,
@@ -131,6 +150,12 @@ export async function runConnectorTest(name) {
       return testVercel();
     case "aws":
       return testAws();
+    case "apollo":
+      return testApollo();
+    case "hunter":
+      return testHunter();
+    case "brightdata":
+      return testBrightData();
     default:
       return { ok: false, error: `Unknown connector: ${name}` };
   }
@@ -246,4 +271,36 @@ async function testAws() {
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
+}
+
+async function testApollo() {
+  const key = config.enrichment?.apolloApiKey;
+  if (!key) return { ok: false, error: "APOLLO_API_KEY not set" };
+  return { ok: true, detail: "Key configured (live people/match skipped to avoid credit use)" };
+}
+
+async function testHunter() {
+  const key = config.enrichment?.hunterApiKey;
+  if (!key) return { ok: false, error: "HUNTER_API_KEY not set" };
+  const r = await fetch(`https://api.hunter.io/v2/account?api_key=${encodeURIComponent(key)}`, {
+    signal: AbortSignal.timeout(20000),
+  });
+  const txt = await r.text();
+  if (!r.ok) return { ok: false, status: r.status, detail: txt.slice(0, 300) };
+  return { ok: true, detail: "Hunter account API OK" };
+}
+
+async function testBrightData() {
+  const token = config.enrichment?.brightdataApiToken;
+  const zone = config.enrichment?.brightdataZone;
+  if (!token || !zone) return { ok: false, error: "BRIGHTDATA_API_TOKEN and BRIGHTDATA_ZONE required" };
+  const r = await fetch("https://api.brightdata.com/request", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ zone, url: "https://example.com", format: "raw", method: "GET" }),
+    signal: AbortSignal.timeout(60000),
+  });
+  const txt = await r.text();
+  if (!r.ok) return { ok: false, status: r.status, detail: txt.slice(0, 400) };
+  return { ok: true, detail: "Bright Data /request OK (example.com)" };
 }
