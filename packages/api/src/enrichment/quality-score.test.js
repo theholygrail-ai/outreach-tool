@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { calculateQualityScore } from "./quality-score.js";
+import {
+  adjustScoreForDiscoveryPipeline,
+  calculateQualityScore,
+  hasResolvableCompanyWebsite,
+} from "./quality-score.js";
 
 describe("calculateQualityScore", () => {
   it("caps at 100", () => {
@@ -45,5 +49,25 @@ describe("calculateQualityScore", () => {
       cross_checks: { data_validity_score: 50, by_field: {}, conflicts: {} },
     });
     expect(s).toBeLessThan(baseline);
+  });
+
+  it("hasResolvableCompanyWebsite accepts bare domains", () => {
+    expect(hasResolvableCompanyWebsite("example.com")).toBe(true);
+    expect(hasResolvableCompanyWebsite("https://www.example.com/path")).toBe(true);
+    expect(hasResolvableCompanyWebsite("")).toBe(false);
+    expect(hasResolvableCompanyWebsite("not a url")).toBe(false);
+  });
+
+  it("adjustScoreForDiscoveryPipeline boosts Groq-sourced leads with a website", () => {
+    const prospect = {
+      source_trace: "groq:llm-fallback",
+      company_website: "epsilon-it.ae",
+    };
+    expect(adjustScoreForDiscoveryPipeline(prospect, 0)).toBe(36);
+  });
+
+  it("adjustScoreForDiscoveryPipeline boosts Explorium-sourced leads", () => {
+    const prospect = { source_trace: "explorium:abc123", company_website: null };
+    expect(adjustScoreForDiscoveryPipeline(prospect, 5)).toBe(23);
   });
 });

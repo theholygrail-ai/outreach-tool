@@ -9,7 +9,7 @@ import { deepEnrichProspect } from "./enrichment/deep-enrich.js";
 import { strictDisplayGate } from "./enrichment/strict-gate.js";
 import { takeEnrichmentSnapshot, buildFieldResolution } from "./enrichment/enrichment-snapshot.js";
 import { runCrossCheck } from "./enrichment/cross-check.js";
-import { calculateQualityScore } from "./enrichment/quality-score.js";
+import { adjustScoreForDiscoveryPipeline, calculateQualityScore } from "./enrichment/quality-score.js";
 import { resolveMxForEmail } from "./enrichment/providers/mx-dns.js";
 import { validateEmailAbstract } from "./enrichment/providers/abstract-email.js";
 import { hunterVerifyEmail } from "./enrichment/providers/hunter.js";
@@ -633,6 +633,24 @@ async function discoverViaBraveSearch(country, industry, limit) {
     }
   }
 
+  if (allResults.length === 0) {
+    const fallbackQueries = [
+      `${industry ? `${industry} ` : ""}small business ${countryName}`,
+      `SME companies ${countryName} website`,
+      `${countryName} local services business`,
+    ];
+    for (const q of fallbackQueries) {
+      try {
+        const results = await braveSearch(q, 12, "");
+        allResults.push(...results);
+        log.info(`Brave Search fallback "${q}" returned ${results.length} results`);
+        if (results.length > 0) break;
+      } catch (err) {
+        log.warn(`Brave Search fallback failed: ${err.message}`);
+      }
+    }
+  }
+
   if (allResults.length === 0) throw new Error("Brave Search returned no results");
 
   const searchContext = allResults.slice(0, 20).map((r, i) =>
@@ -711,11 +729,19 @@ async function checkWebsite(url) {
 
 async function crossReferenceCompany(companyName, country) {
   try {
-    const results = await braveSearch(`"${companyName}" ${country}`, 5, (country || "").toLowerCase());
-    const match = results.find(r =>
-      r.title?.toLowerCase().includes(companyName.toLowerCase().split(" ")[0]) ||
-      r.description?.toLowerCase().includes(companyName.toLowerCase().split(" ")[0])
-    );
+    const cc = (country || "").toLowerCase();
+    const qPrimary = `"${companyName}" ${country || ""}`.trim();
+    let results = await braveSearch(qPrimary, 8, cc);
+    if (results.length === 0) {
+      results = await braveSearch(`${companyName} company ${country || ""}`.trim(), 8, "");
+    }
+    const lowerName = companyName.toLowerCase();
+    const tokens = lowerName.split(/\s+/).filter((t) => t.length > 2);
+    const match = results.find((r) => {
+      const t = `${r.title || ""} ${r.description || ""}`.toLowerCase();
+      if (t.includes(lowerName)) return true;
+      return tokens.some((tok) => t.includes(tok));
+    });
     return {
       company_found_in_search: !!match,
       company_search_url: match?.url || null,
@@ -1163,15 +1189,20 @@ export async function discoverProspects(searchConfig) {
       send("progress", { stage: "verifying", company: biz.company_name });
 
       const verification = await verifyProspect(biz, enrichmentPages.length ? { pages: enrichmentPages } : null);
-      const qualityScore = calculateQualityScore(biz, verification);
+      const baseQuality = calculateQualityScore(biz, verification);
+      const qualityScore = adjustScoreForDiscoveryPipeline(biz, baseQuality);
       const status = statusFromQualityScore(qualityScore);
       verification.quality_score = qualityScore;
+      verification.discovery_score_base = baseQuality;
 
-      log.info(`${biz.company_name}: quality=${qualityScore}, status=${status}, website=${verification.website_live}, search=${verification.company_found_in_search}`);
+      const minQ = config.enrichment?.discoveryMinQuality ?? 22;
+      log.info(
+        `${biz.company_name}: quality=${qualityScore} (base=${baseQuality}) min=${minQ}, status=${status}, website=${verification.website_live}, search=${verification.company_found_in_search}`,
+      );
 
-      if (qualityScore < 30) {
-        log.info(`Skipping ${biz.company_name} — quality score ${qualityScore} below threshold`);
-        errors.push(`Rejected ${biz.company_name}: quality score ${qualityScore}/100`);
+      if (qualityScore < minQ) {
+        log.info(`Skipping ${biz.company_name} — quality score ${qualityScore} below discovery threshold ${minQ}`);
+        errors.push(`Rejected ${biz.company_name}: quality score ${qualityScore}/100 (min ${minQ})`);
         continue;
       }
 

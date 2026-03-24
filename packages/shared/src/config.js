@@ -79,6 +79,11 @@ export const config = {
     playwrightEnabled: process.env.PLAYWRIGHT_ENABLED === "1" || process.env.PLAYWRIGHT_ENABLED === "true",
     /** Minimum quality score after verify to be list-eligible */
     strictMinQuality: parseInt(process.env.STRICT_MIN_QUALITY, 10) || 45,
+    /**
+     * Minimum score to keep a lead from discovery (after adjustScoreForDiscoveryPipeline).
+     * Base verify scores are harsh when the site is down or Brave does not match Arabic names — default is below the old hardcoded 30.
+     */
+    discoveryMinQuality: parseInt(process.env.DISCOVERY_MIN_QUALITY, 10) || 22,
     /** If false, skip contact-field requirements (quality only) */
     strictRequireContact: process.env.STRICT_REQUIRE_CONTACT !== "0",
     /**

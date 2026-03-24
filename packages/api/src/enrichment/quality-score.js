@@ -56,3 +56,33 @@ export function calculateQualityScore(prospect, verification) {
 
   return Math.max(0, Math.min(100, Math.round(score)));
 }
+
+/** @param {string | null | undefined} w */
+export function hasResolvableCompanyWebsite(w) {
+  if (!w || typeof w !== "string") return false;
+  try {
+    const u = new URL(w.startsWith("http") ? w : `https://${w.trim()}`);
+    return Boolean(u.hostname?.includes("."));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Discovery leads often fail website_live / Brave name-match (e.g. UAE names, weak sites) but are still worth saving as needs_review.
+ * Bonuses are applied only in the discovery pipeline after calculateQualityScore.
+ *
+ * @param {object} prospect
+ * @param {number} baseScore — from calculateQualityScore
+ */
+export function adjustScoreForDiscoveryPipeline(prospect, baseScore) {
+  let s = Number(baseScore) || 0;
+  const trace = prospect?.source_trace || "";
+  if (trace.startsWith("explorium:")) s += 18;
+  else if (trace.includes("groq")) s += 26;
+  else if ((prospect?.data_sources || []).includes("brave_search") || trace === "brave_search") s += 14;
+
+  if (hasResolvableCompanyWebsite(prospect?.company_website)) s += 10;
+
+  return Math.max(0, Math.min(100, Math.round(s)));
+}
