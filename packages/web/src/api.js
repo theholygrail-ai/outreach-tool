@@ -1,9 +1,47 @@
-/** Base URL for API (empty = same origin / Vite proxy). Set VITE_API_URL on Vercel to Lambda Function URL. */
-function getApiBase() {
+/**
+ * API base URL resolution:
+ * 1. Build-time: `VITE_API_URL` (used by Vercel/GitHub builds).
+ * 2. Runtime: `GET /api-config.json` → `{ "apiBase": "https://....lambda-url....on.aws" }` (no trailing slash).
+ *    Use this when you deploy prebuilt `dist/` (CLI) without env — edit `public/api-config.json`, rebuild, redeploy.
+ * Empty base = same origin (Vite dev proxy only); production static hosts have no `/api`.
+ */
+let _configLoaded = false;
+let _apiBase = "";
+
+function viteEnvBase() {
   const raw = import.meta.env.VITE_API_URL;
   if (typeof raw !== "string") return "";
   const u = raw.trim().replace(/\/+$/, "");
   return u.length > 0 ? u : "";
+}
+
+/** Resolved API origin (no trailing slash), or "" if using same-origin. */
+export function getApiBase() {
+  if (!_configLoaded) return viteEnvBase();
+  return _apiBase;
+}
+
+/** Test-only: reset loader state (Vitest). No-op in production. */
+export function __resetApiConfigForTests() {
+  if (!import.meta.env.VITEST) return;
+  _configLoaded = false;
+  _apiBase = "";
+}
+
+/** Call once before any API requests. Loads `/api-config.json` to override `VITE_API_URL` when present. */
+export async function initApiConfig() {
+  _apiBase = viteEnvBase();
+  try {
+    const r = await fetch("/api-config.json", { cache: "no-store" });
+    if (!r.ok) return;
+    const j = await r.json();
+    const b = typeof j.apiBase === "string" ? j.apiBase.trim().replace(/\/+$/, "") : "";
+    if (b.length > 0) _apiBase = b;
+  } catch {
+    /* keep _apiBase from env */
+  } finally {
+    _configLoaded = true;
+  }
 }
 
 export function apiUrl(path) {
@@ -24,7 +62,11 @@ async function apiFetch(path, opts = {}) {
   return res.json();
 }
 
-export async function fetchProspects() { return apiFetch("/api/prospects"); }
+/** @param {{ visibility?: "default" | "all" }} [opts] */
+export async function fetchProspects(opts = {}) {
+  const v = opts.visibility === "all" ? "all" : "default";
+  return apiFetch(`/api/prospects?visibility=${encodeURIComponent(v)}`);
+}
 export async function fetchProspect(id) { return apiFetch(`/api/prospects/${id}`); }
 export async function createProspect(data) { return apiFetch("/api/prospects", { method: "POST", body: JSON.stringify(data) }); }
 export async function updateProspect(id, data) { return apiFetch(`/api/prospects/${id}`, { method: "PUT", body: JSON.stringify(data) }); }
@@ -69,9 +111,10 @@ export function subscribeSSE(callback) {
         const ps = await fetchPipelineStatus();
         const act = await fetchActivity(1);
         const newStatus = ps.status || "idle";
-        const newTs = act[0]?.ts || 0;
+        const rawTs = act[0]?.ts;
+        const newTs = rawTs != null ? new Date(rawTs).getTime() : 0;
         const statusChanged = _lastPipelineStatus !== null && _lastPipelineStatus !== newStatus;
-        const activityChanged = _lastActivityTs !== 0 && newTs > _lastActivityTs;
+        const activityChanged = _lastActivityTs !== 0 && Number.isFinite(newTs) && newTs > _lastActivityTs;
         _lastPipelineStatus = newStatus;
         _lastActivityTs = newTs;
         if (statusChanged || activityChanged) {

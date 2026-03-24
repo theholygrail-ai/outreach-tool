@@ -45,35 +45,116 @@ function route() {
   else { setActive("dashboard"); renderDashboard(); }
 }
 function setActive(v) { document.querySelector(`[data-view="${v}"]`)?.classList.add("active"); }
-window.addEventListener("hashchange", route);
 
-// ---- SSE ----
-api.subscribeSSE((event, data) => {
-  if (["prospect_created","prospect_updated","prospect_deleted","prospects_imported","pipeline_started","pipeline_progress","pipeline_completed","pipeline_failed","booking_created", "poll_refresh"].includes(event)) {
-    route(); // re-render current view
+/** Set true only after initApiConfig + API base resolution, so hashchange cannot race ahead of /api-config.json. */
+let appReady = false;
+
+/** Dashboard / prospects / runs can update without tearing down the whole main view. */
+function isLivePatchView() {
+  const h = location.hash || "#/";
+  if (h === "#" || h === "#/" || h === "") return true;
+  if (h.startsWith("#/prospects")) return true;
+  if (h.startsWith("#/runs")) return true;
+  return false;
+}
+
+// ---- SSE (registered after initApiConfig in boot) ----
+function registerRealtime() {
+  api.subscribeSSE((event, _data) => {
+    if (event === "poll_refresh") {
+      void refreshFromPoll();
+      return;
+    }
+    // Fires many times per pipeline run — full route() caused constant loading flashes.
+    if (event === "pipeline_progress") {
+      void refreshFromPoll();
+      void refreshProspectsTableFromPoll();
+      return;
+    }
+    if (["prospect_created", "prospect_updated", "prospect_deleted", "prospects_imported"].includes(event)) {
+      void refreshFromPoll();
+      void refreshProspectsTableFromPoll();
+      if (!isLivePatchView()) route();
+      return;
+    }
+    if (["pipeline_started", "pipeline_completed", "pipeline_failed", "booking_created"].includes(event)) {
+      void refreshFromPoll();
+      void refreshProspectsTableFromPoll();
+      if (!isLivePatchView()) route();
+      return;
+    }
+  });
+}
+
+/** Remote deployments poll pipeline/activity; update live regions only — no full view tear-down. */
+async function refreshFromPoll() {
+  const dashBody = document.getElementById("dashboard-body");
+  if (dashBody) {
+    try {
+      const [stats, activity, pStatus] = await Promise.all([
+        api.fetchPipelineStats(), api.fetchActivity(10), api.fetchPipelineStatus(),
+      ]);
+      const pipelineRunning = pStatus.status === "running";
+      const badge = document.getElementById("dashboard-pipeline-badge");
+      if (badge) {
+        badge.textContent = pipelineRunning ? "Pipeline Running" : "Idle";
+        badge.className = `badge badge-${pipelineRunning ? "running" : "idle"}`;
+      }
+      dashBody.innerHTML = dashboardBodyInnerHtml(stats, activity);
+    } catch {
+      /* ignore */
+    }
   }
-});
+  const runsMount = document.getElementById("runs-body");
+  if (runsMount) {
+    try {
+      const runs = await api.fetchPipelineRuns();
+      const countEl = document.getElementById("runs-count");
+      if (countEl) countEl.textContent = `(${runs.length})`;
+      runsMount.innerHTML = runs.length
+        ? `<div class="card"><table><thead><tr><th>ID</th><th>Mode</th><th>Status</th><th>Processed</th><th>Errors</th><th>Started</th><th>Completed</th></tr></thead>
+        <tbody>${runs.map(r => `<tr><td class="mono">${(r.id || "").slice(0, 8)}</td><td>${esc(r.config?.mode || "")}</td>
+          <td>${badge(r.status || "unknown")}</td><td>${r.prospects_processed || 0}</td><td>${(r.errors || []).length}</td>
+          <td>${r.started_at ? new Date(r.started_at).toLocaleString() : "\u2014"}</td>
+          <td>${r.completed_at ? new Date(r.completed_at).toLocaleString() : "\u2014"}</td></tr>`).join("")}</tbody></table></div>`
+        : '<div class="card empty">No pipeline runs yet. Click "Run Pipeline" on the dashboard to start.</div>';
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
-// ---- DASHBOARD ----
-async function renderDashboard() {
-  main().innerHTML = `<div class="loading">Loading dashboard...</div>`;
+/** When on Prospects, re-fetch and re-apply filters without re-running renderProspects (avoids "Loading…" flash). */
+async function refreshProspectsTableFromPoll() {
+  const wrap = document.getElementById("prospect-table-wrap");
+  if (!wrap) return;
+  const showHidden = document.getElementById("show-hidden")?.checked === true;
+  const qualityFilter = document.getElementById("quality-filter")?.value || "all";
+  const q = (document.getElementById("search")?.value || "").toLowerCase();
   try {
-    const [stats, activity, pStatus] = await Promise.all([
-      api.fetchPipelineStats(), api.fetchActivity(10), api.fetchPipelineStatus(),
-    ]);
-    const byStatus = stats.by_status || {};
-    const pipelineRunning = pStatus.status === "running";
+    const prospects = await api.fetchProspects({ visibility: showHidden ? "all" : "default" });
+    const countEl = document.getElementById("prospect-count");
+    if (countEl) countEl.textContent = `(${prospects.length})`;
+    let filtered = prospects;
+    if (qualityFilter === "verified") filtered = filtered.filter(p => (p.quality_score || 0) >= 60);
+    else if (qualityFilter === "review") filtered = filtered.filter(p => {
+      const s = p.quality_score || 0;
+      return s >= 30 && s < 60;
+    });
+    else if (qualityFilter === "30+") filtered = filtered.filter(p => (p.quality_score || 0) >= 30);
+    if (q) filtered = filtered.filter(p => `${p.first_name} ${p.last_name} ${p.company_name} ${p.country} ${p.status}`.toLowerCase().includes(q));
+    wrap.innerHTML = prospectTable(filtered);
+    bindRows();
+  } catch {
+    /* ignore */
+  }
+}
 
-    main().innerHTML = `
-      <div class="view-header"><h1>Dashboard</h1>
-        <div class="view-actions">
-          <span class="badge badge-${pipelineRunning ? "running" : "idle"}">${pipelineRunning ? "Pipeline Running" : "Idle"}</span>
-          <button class="btn btn-sm" id="btn-discover">Discover Prospects</button>
-          <button class="btn btn-sm" id="btn-run">Run Pipeline</button>
-        </div>
-      </div>
+function dashboardBodyInnerHtml(stats, activity) {
+  const byStatus = stats.by_status || {};
+  return `
       <div class="stats-row">
-        ${statCard("Total", stats.total, "prospects")}
+        ${statCard("Total", stats.total, (stats.hidden_count > 0 ? `${stats.total_all || stats.total} incl. ${stats.hidden_count} hidden` : "list-visible"))}
         ${statCard("Qualified", (byStatus.qualified || 0) + (byStatus.audited_or_researched || 0) + (byStatus.design_brief_ready || 0) + (byStatus.design_generated || 0) + (byStatus.design_reviewed || 0), "in pipeline")}
         ${statCard("Deployed", (byStatus.deployed || 0) + (byStatus.proof_captured || 0) + (byStatus.outreach_ready || 0) + (byStatus.sent || 0), "MVPs live")}
         ${statCard("Booked", byStatus.meeting_booked || 0, "meetings")}
@@ -103,6 +184,26 @@ async function renderDashboard() {
           </div>
         </div>
       </div>`;
+}
+
+// ---- DASHBOARD ----
+async function renderDashboard() {
+  main().innerHTML = `<div class="loading">Loading dashboard...</div>`;
+  try {
+    const [stats, activity, pStatus] = await Promise.all([
+      api.fetchPipelineStats(), api.fetchActivity(10), api.fetchPipelineStatus(),
+    ]);
+    const pipelineRunning = pStatus.status === "running";
+
+    main().innerHTML = `
+      <div class="view-header"><h1>Dashboard</h1>
+        <div class="view-actions">
+          <span class="badge badge-${pipelineRunning ? "running" : "idle"}" id="dashboard-pipeline-badge">${pipelineRunning ? "Pipeline Running" : "Idle"}</span>
+          <button class="btn btn-sm" id="btn-discover">Discover Prospects</button>
+          <button class="btn btn-sm" id="btn-run">Run Pipeline</button>
+        </div>
+      </div>
+      <div id="dashboard-body">${dashboardBodyInnerHtml(stats, activity)}</div>`;
 
     document.getElementById("btn-discover")?.addEventListener("click", async () => {
       const country = prompt("Country code (US, GB, AE):", "US");
@@ -153,7 +254,8 @@ async function renderDashboard() {
 async function renderProspects() {
   main().innerHTML = `<div class="loading">Loading prospects...</div>`;
   try {
-    const prospects = await api.fetchProspects();
+    let showHidden = false;
+    let prospects = await api.fetchProspects({ visibility: "default" });
     let qualityFilter = "all";
 
     function applyFilters(q = "") {
@@ -167,8 +269,11 @@ async function renderProspects() {
     }
 
     main().innerHTML = `
-      <div class="view-header"><h1>Prospects <small class="text-muted">(${prospects.length})</small></h1>
+      <div class="view-header"><h1>Prospects <small class="text-muted" id="prospect-count">(${prospects.length})</small></h1>
         <div class="view-actions">
+          <label class="text-muted" style="display:flex;align-items:center;gap:0.35rem;font-size:0.8rem;margin-right:0.5rem">
+            <input type="checkbox" id="show-hidden" /> Show hidden
+          </label>
           <select id="quality-filter" class="input" style="width:auto">
             <option value="all">All prospects</option>
             <option value="verified">Verified (60+)</option>
@@ -181,6 +286,13 @@ async function renderProspects() {
         </div>
       </div>
       <div class="card"><div class="table-wrap" id="prospect-table-wrap">${prospectTable(prospects)}</div></div>`;
+
+    document.getElementById("show-hidden").addEventListener("change", async (e) => {
+      showHidden = e.target.checked;
+      prospects = await api.fetchProspects({ visibility: showHidden ? "all" : "default" });
+      document.getElementById("prospect-count").textContent = `(${prospects.length})`;
+      applyFilters(document.getElementById("search").value.toLowerCase());
+    });
 
     document.getElementById("search").addEventListener("input", (e) => applyFilters(e.target.value.toLowerCase()));
     document.getElementById("quality-filter").addEventListener("change", (e) => {
@@ -245,6 +357,8 @@ async function openProspectModal(id) {
           ${dRow("Deployed MVP", p.deployment_url ? `<a href="${p.deployment_url}" target="_blank" class="btn btn-xs">${esc(p.deployment_url)}</a>` : "Not deployed yet")}
           ${dRow("Industry", esc(p.industry))}${dRow("Size", p.company_size_estimate || p.company_size ? `~${p.company_size_estimate || p.company_size} employees` : "\u2014")}
           ${dRow("Status", badge(p.status || p.outreach_status))}${dRow("ICP", icpBadge(p.icp_score))}
+          ${dRow("List visibility", p.display_eligible === false ? badge("hidden") : badge("visible"))}
+          ${dRow("Enrichment", esc(p.enrichment_status || "—"))}
           ${dRow("Notes", esc(p.notes))}
         </div>`;
       } else if (tab === "audit") {
@@ -377,7 +491,7 @@ function showCsvImport() {
 async function renderOutreach() {
   main().innerHTML = `<div class="loading">Loading outreach...</div>`;
   try {
-    const prospects = await api.fetchProspects();
+    const prospects = await api.fetchProspects({ visibility: "all" });
     const channels = ["email", "whatsapp", "linkedin", "voice_note"];
     const chLabels = { email: "Email", whatsapp: "WhatsApp", linkedin: "LinkedIn", voice_note: "Voice Notes" };
 
@@ -573,13 +687,13 @@ async function renderRuns() {
   main().innerHTML = `<div class="loading">Loading runs...</div>`;
   try {
     const runs = await api.fetchPipelineRuns();
-    main().innerHTML = `<div class="view-header"><h1>Pipeline Runs <small class="text-muted">(${runs.length})</small></h1></div>
-      ${runs.length ? `<div class="card"><table><thead><tr><th>ID</th><th>Mode</th><th>Status</th><th>Processed</th><th>Errors</th><th>Started</th><th>Completed</th></tr></thead>
+    main().innerHTML = `<div class="view-header"><h1>Pipeline Runs <small class="text-muted" id="runs-count">(${runs.length})</small></h1></div>
+      <div id="runs-body">${runs.length ? `<div class="card"><table><thead><tr><th>ID</th><th>Mode</th><th>Status</th><th>Processed</th><th>Errors</th><th>Started</th><th>Completed</th></tr></thead>
         <tbody>${runs.map(r => `<tr><td class="mono">${(r.id || "").slice(0, 8)}</td><td>${esc(r.config?.mode || "")}</td>
           <td>${badge(r.status || "unknown")}</td><td>${r.prospects_processed || 0}</td><td>${(r.errors || []).length}</td>
           <td>${r.started_at ? new Date(r.started_at).toLocaleString() : "\u2014"}</td>
           <td>${r.completed_at ? new Date(r.completed_at).toLocaleString() : "\u2014"}</td></tr>`).join("")}</tbody></table></div>`
-        : '<div class="card empty">No pipeline runs yet. Click "Run Pipeline" on the dashboard to start.</div>'}`;
+        : '<div class="card empty">No pipeline runs yet. Click "Run Pipeline" on the dashboard to start.</div>'}</div>`;
   } catch (err) {
     main().innerHTML = `<div class="error">${esc(err.message)}</div>`;
   }
@@ -610,4 +724,35 @@ function renderPipeline(byStatus) {
 }
 
 // ---- INIT ----
-route();
+function showMissingApiConfig() {
+  const el = main();
+  if (!el) return;
+  el.innerHTML = `
+    <div class="card" style="max-width:42rem;margin:2rem auto;padding:1.5rem;">
+      <h1>API not configured</h1>
+      <p>This production build has no backend URL. The app was calling <code>/api/…</code> on the static host, which has no API.</p>
+      <p><strong>Fix (pick one):</strong></p>
+      <ol>
+        <li>Set <code>VITE_API_URL</code> to your Lambda Function URL (no trailing slash), then run <code>npm run build:web</code> and redeploy.</li>
+        <li>Or add <code>packages/web/public/api-config.json</code> with <code>{ "apiBase": "https://…lambda-url…on.aws" }</code>, rebuild, redeploy.</li>
+        <li>Or set <code>VITE_API_URL</code> in the Vercel project and deploy from Git (see <code>docs/VERCEL.md</code>).</li>
+      </ol>
+      <p>Ensure the Lambda allows CORS from this origin (or use a Vercel rewrite to proxy <code>/api</code> — see docs).</p>
+    </div>`;
+}
+
+async function boot() {
+  await api.initApiConfig();
+  if (import.meta.env.PROD && !api.getApiBase()) {
+    showMissingApiConfig();
+    return;
+  }
+  appReady = true;
+  window.addEventListener("hashchange", () => {
+    if (appReady) route();
+  });
+  registerRealtime();
+  route();
+}
+
+boot();
