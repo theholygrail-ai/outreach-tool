@@ -23,7 +23,13 @@
           <div class="nav-meta">US / UK / UAE</div>
         </div>
       </nav>
-      <main id="main-content"></main>
+      <main class="main-shell" id="main-shell">
+        <div id="pipeline-progress-ui" class="pipeline-progress-ui hidden" role="status" aria-live="polite">
+          <span class="pipeline-progress-indicator" aria-hidden="true"></span>
+          <span class="pipeline-progress-text"></span>
+        </div>
+        <div id="main-content"></div>
+      </main>
     </div>
     <div id="modal-overlay" class="modal-overlay hidden"></div>
     <div id="prospect-modal" class="modal hidden"></div>

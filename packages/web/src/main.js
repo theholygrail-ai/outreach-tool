@@ -32,6 +32,47 @@ function linkOrDash(url, label) {
 
 const main = () => document.getElementById("main-content");
 
+function pipelineProgressWrap() {
+  return document.getElementById("pipeline-progress-ui");
+}
+
+/** Human-readable line from worker `progress` payloads (see pipeline-worker send("progress")). */
+function formatPipelineProgressMessage(data) {
+  if (!data || typeof data !== "object") return "Pipeline running…";
+  if (data.stage && data.company) {
+    const st = String(data.stage);
+    const cap = st.charAt(0).toUpperCase() + st.slice(1);
+    return `${cap}: ${data.company}`;
+  }
+  if (data.from != null && data.to != null) {
+    const a = String(data.from).replace(/_/g, " ");
+    const b = String(data.to).replace(/_/g, " ");
+    return `${a} → ${b}`;
+  }
+  if (data.discovered != null) {
+    const n = data.discovered;
+    const src = data.source ? ` via ${data.source}` : "";
+    return `Discovered ${n} prospect${n === 1 ? "" : "s"}${src}`;
+  }
+  return "Pipeline running…";
+}
+
+function showPipelineProgressBar(message) {
+  const wrap = pipelineProgressWrap();
+  if (!wrap) return;
+  const textEl = wrap.querySelector(".pipeline-progress-text");
+  if (textEl) textEl.textContent = message;
+  wrap.classList.remove("hidden");
+}
+
+function hidePipelineProgressBar() {
+  pipelineProgressWrap()?.classList.add("hidden");
+}
+
+function updatePipelineProgressUI(data) {
+  showPipelineProgressBar(formatPipelineProgressMessage(data));
+}
+
 // ---- ROUTER ----
 function route() {
   const h = location.hash || "#/";
@@ -72,10 +113,8 @@ function registerRealtime() {
       void refreshFromPoll();
       return;
     }
-    // Fires many times per pipeline run — full route() caused constant loading flashes.
     if (event === "pipeline_progress") {
-      void refreshFromPoll();
-      void refreshProspectsTableFromPoll();
+      updatePipelineProgressUI(_data);
       return;
     }
     if (["prospect_created", "prospect_updated", "prospect_deleted", "prospects_imported"].includes(event)) {
@@ -84,7 +123,21 @@ function registerRealtime() {
       if (!isLivePatchView()) route();
       return;
     }
-    if (["pipeline_started", "pipeline_completed", "pipeline_failed", "booking_created"].includes(event)) {
+    if (event === "pipeline_started") {
+      showPipelineProgressBar("Pipeline running…");
+      void refreshFromPoll();
+      void refreshProspectsTableFromPoll();
+      if (!isLivePatchView()) route();
+      return;
+    }
+    if (event === "pipeline_completed" || event === "pipeline_failed") {
+      hidePipelineProgressBar();
+      void refreshFromPoll();
+      void refreshProspectsTableFromPoll();
+      if (!isLivePatchView()) route();
+      return;
+    }
+    if (event === "booking_created") {
       void refreshFromPoll();
       void refreshProspectsTableFromPoll();
       if (!isLivePatchView()) route();

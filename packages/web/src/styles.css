@@ -58,6 +58,39 @@ body {
 .dot-green { background: var(--success); box-shadow: 0 0 4px var(--success); }
 .dot-red { background: var(--danger); box-shadow: 0 0 4px var(--danger); }
 
+.main-shell {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pipeline-progress-ui {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+  padding: 0.5rem 2rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--accent-muted);
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+.pipeline-progress-ui.hidden { display: none; }
+.pipeline-progress-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  animation: pipeline-pulse 1.2s ease-in-out infinite;
+}
+@keyframes pipeline-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.92); }
+}
+.pipeline-progress-text { min-width: 0; word-break: break-word; }
+
 #main-content {
   flex: 1; min-width: 0;
   padding: 1.5rem 2rem 4rem;
