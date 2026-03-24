@@ -49,6 +49,13 @@ function setActive(v) { document.querySelector(`[data-view="${v}"]`)?.classList.
 /** Set true only after initApiConfig + API base resolution, so hashchange cannot race ahead of /api-config.json. */
 let appReady = false;
 
+/** Cancels in-flight `renderProspects` when navigating away or re-entering the route. */
+let prospectsRenderGeneration = 0;
+
+function isProspectsRoute() {
+  return (location.hash || "#/").startsWith("#/prospects");
+}
+
 /** Dashboard / prospects / runs can update without tearing down the whole main view. */
 function isLivePatchView() {
   const h = location.hash || "#/";
@@ -252,10 +259,15 @@ async function renderDashboard() {
 
 // ---- PROSPECTS ----
 async function renderProspects() {
-  main().innerHTML = `<div class="loading">Loading prospects...</div>`;
+  const gen = ++prospectsRenderGeneration;
+  const alreadyMounted = !!document.getElementById("prospect-table-wrap");
+  if (!alreadyMounted) {
+    main().innerHTML = `<div class="loading">Loading prospects...</div>`;
+  }
   try {
     let showHidden = false;
     let prospects = await api.fetchProspects({ visibility: "default" });
+    if (gen !== prospectsRenderGeneration || !isProspectsRoute()) return;
     let qualityFilter = "all";
 
     function applyFilters(q = "") {
@@ -303,6 +315,7 @@ async function renderProspects() {
     document.getElementById("btn-csv")?.addEventListener("click", showCsvImport);
     bindRows();
   } catch (err) {
+    if (gen !== prospectsRenderGeneration || !isProspectsRoute()) return;
     main().innerHTML = `<div class="error">Failed to load prospects: ${esc(err.message)}<br>Is the API running? <code>npm run dev:api</code></div>`;
   }
 }
