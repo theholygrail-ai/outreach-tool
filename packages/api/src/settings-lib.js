@@ -79,11 +79,13 @@ export function buildSettingsSnapshot() {
 
   const endpoints = [
     { id: "health", path: "/api/health", method: "GET", note: "Liveness" },
+    { id: "health_ready", path: "/api/health/ready", method: "GET", note: "DynamoDB readiness" },
     { id: "prospects", path: "/api/prospects", method: "GET" },
     { id: "activity", path: "/api/activity?limit=1", method: "GET" },
     { id: "pipeline_stats", path: "/api/pipeline/stats", method: "GET" },
     { id: "pipeline_status", path: "/api/pipeline/status", method: "GET" },
     { id: "pipeline_runs", path: "/api/pipeline/runs", method: "GET" },
+    { id: "pipeline_run_by_id", path: "/api/pipeline/runs/:id", method: "GET", note: "Single run + duration_ms" },
     { id: "bookings", path: "/api/bookings", method: "GET" },
     { id: "tools_status", path: "/api/tools/status", method: "GET" },
     { id: "settings", path: "/api/settings", method: "GET" },

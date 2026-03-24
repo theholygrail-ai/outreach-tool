@@ -72,6 +72,16 @@ export const config = {
   targetGeographies: ["US", "GB", "AE"],
   budgetTarget: 500,
   mvpTimelineDays: 30,
+
+  /** Post-enrichment strict display gate (discovery pipeline) */
+  enrichment: {
+    maxPages: parseInt(process.env.ENRICH_MAX_PAGES, 10) || 8,
+    playwrightEnabled: process.env.PLAYWRIGHT_ENABLED === "1" || process.env.PLAYWRIGHT_ENABLED === "true",
+    /** Minimum quality score after verify to be list-eligible */
+    strictMinQuality: parseInt(process.env.STRICT_MIN_QUALITY, 10) || 45,
+    /** If true, require (email && phone) OR (email && linkedin_url) for display_eligible */
+    strictRequireContact: process.env.STRICT_REQUIRE_CONTACT !== "0",
+  },
 };
 
 export function validateConfig() {

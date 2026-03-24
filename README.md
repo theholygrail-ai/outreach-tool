@@ -23,6 +23,9 @@ docs/           Agent instruction files
 - **Web UI (Vercel)**: Connect the GitHub repo in Vercel (**GitHub integration** → auto-deploy on every push). See **[docs/VERCEL.md](docs/VERCEL.md)**.
 - **REST API**: AWS Lambda (Function URL) + async pipeline worker Lambda — see **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 - Set **`VITE_API_URL`** on Vercel to the Lambda Function URL (no trailing slash). Configure API keys on the Lambdas in the AWS Console (do not embed secrets in CDK templates).
+- **Quality / smoke tests / known gaps:** see **[docs/AUDIT.md](docs/AUDIT.md)**.
+- **Go-live (AWS + SES + Vercel + compliance):** **[docs/GO_LIVE.md](docs/GO_LIVE.md)**.
+- **Outreach email:** the **pipeline worker** sends via **SES** when a prospect reaches `outreach_ready` with a valid `email` and `SENDER_EMAIL` is set (see `.env.example`). Run `npm test` for API unit tests; CI runs on push (`.github/workflows/ci.yml`).
 
 ## Prerequisites
 

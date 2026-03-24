@@ -1,16 +1,9 @@
 import { registerTool } from "../orchestrator.js";
 import { createLogger } from "@outreach-tool/shared/logger";
 import { config } from "@outreach-tool/shared/config";
-import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
+import { sendOutreachEmail } from "@outreach-tool/shared/ses-send";
 
 const log = createLogger("outreach");
-
-const ses = new SESClient({
-  region: config.ses.region,
-  credentials: config.ses.accessKeyId
-    ? { accessKeyId: config.ses.accessKeyId, secretAccessKey: config.ses.secretAccessKey }
-    : undefined,
-});
 
 export const OUTREACH_TOOL_DEFINITIONS = [
   {
@@ -69,33 +62,34 @@ export const OUTREACH_TOOL_DEFINITIONS = [
 ];
 
 registerTool("send_email", async (args) => {
-  const sender = config.outreach.senderEmail;
-  log.info("send_email", { to: args.to, subject: args.subject, sender });
+  log.info("send_email", { to: args.to, subject: args.subject, sender: config.outreach.senderEmail });
 
-  if (!sender) {
+  if (!config.outreach.senderEmail) {
     return { status: "failed", error: "SENDER_EMAIL not set in .env" };
-  }
-  if (!config.ses.accessKeyId) {
-    return { status: "failed", error: "SES_AWS_ACCESS_KEY_ID not set in .env" };
   }
 
   try {
-    const result = await ses.send(new SendEmailCommand({
-      Source: sender,
-      Destination: { ToAddresses: [args.to] },
-      Message: {
-        Subject: { Data: args.subject },
-        Body: {
-          Html: { Data: args.body_html },
-          Text: { Data: args.body_text },
-        },
-      },
-    }));
-    log.info("Email sent successfully", { messageId: result.MessageId, to: args.to });
-    return { status: "sent", messageId: result.MessageId, to: args.to, from: sender };
+    const result = await sendOutreachEmail({
+      to: args.to,
+      subject: args.subject,
+      bodyHtml: args.body_html,
+      bodyText: args.body_text,
+    });
+    log.info("Email sent successfully", { messageId: result.messageId, to: args.to });
+    return {
+      status: "sent",
+      messageId: result.messageId,
+      to: args.to,
+      from: config.outreach.senderEmail,
+    };
   } catch (err) {
     log.error("SES send failed", { error: err.message, code: err.Code || err.name });
-    return { status: "failed", error: err.message, to: args.to, note: "SES sandbox: recipient must be verified. Request production access for unrestricted sending." };
+    return {
+      status: "failed",
+      error: err.message,
+      to: args.to,
+      note: "SES sandbox: recipient must be verified. Request production access for unrestricted sending.",
+    };
   }
 });
 

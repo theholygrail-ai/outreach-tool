@@ -22,11 +22,19 @@
     "vercel-build": "npm run build:web",
     "agents:run": "npm run start -w packages/agents",
     "api:start": "npm run start -w packages/api",
-    "lint": "npm run lint --workspaces --if-present",
+    "lint": "eslint packages/web/src packages/api/src packages/shared/src",
+    "test": "npm run test --workspaces --if-present",
+    "smoke:api": "node scripts/api-smoke.mjs",
+    "verify:deploy": "node scripts/verify-deploy.mjs",
     "clean": "npm run clean --workspaces --if-present"
   },
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=9.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "eslint": "^9.15.0",
+    "globals": "^15.12.0"
   }
 }

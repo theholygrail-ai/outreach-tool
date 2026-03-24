@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+.git
+.gitignore
+cdk.out
+cdk.out.tmp
+.tmp-bundle
+packages/web/dist
+packages/mobile
+**/.vercel
+*.md
+.env
+.env.*

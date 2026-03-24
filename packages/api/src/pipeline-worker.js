@@ -5,6 +5,9 @@
 import { config } from "@outreach-tool/shared/config";
 import { createLogger } from "@outreach-tool/shared/logger";
 import { createProspect } from "@outreach-tool/shared/prospect-schema";
+import { deepEnrichProspect } from "./enrichment/deep-enrich.js";
+import { strictDisplayGate } from "./enrichment/strict-gate.js";
+import { sendOutreachEmail, stripHtml, hasSenderIdentity } from "@outreach-tool/shared/ses-send";
 import path from "path";
 import { fileURLToPath } from "url";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -38,7 +41,7 @@ async function listProspects() {
     FilterExpression: "begins_with(PK, :prefix) AND SK = :sk",
     ExpressionAttributeValues: { ":prefix": "PROSPECT#", ":sk": "PROFILE" },
   })), 90000, "DynamoDB listProspects");
-  return (res.Items || []).map(({ PK, SK, GSI1PK, GSI1SK, ...rest }) => rest);
+  return (res.Items || []).map(({ PK: _pk, SK: _sk, GSI1PK: _g1, GSI1SK: _g2, ...rest }) => rest);
 }
 
 async function saveProspect(prospect) {
@@ -228,7 +231,7 @@ async function advanceProspect(prospect, runId) {
       updates = await stageOutreach(prospect);
       break;
     case "outreach_ready":
-      updates = { status: "sent" };
+      updates = await stageSendOutreach(prospect);
       break;
     default:
       log.info(`No action for stage ${stage}`);
@@ -338,11 +341,15 @@ async function stageDesignBrief(prospect) {
 
 async function stageOutreach(prospect) {
   log.info("Stage: GENERATE OUTREACH");
+  const calLine = config.outreach.calendlyLink
+    ? `Include this booking link verbatim in the email HTML: ${config.outreach.calendlyLink}`
+    : "Include a clear call-to-action to book a short call (ops will add the booking link when sending if missing).";
   const result = await askGroq(
-    "You are a cold outreach copywriter. Write personalized, specific messages. Include a Calendly link placeholder.",
+    "You are a cold outreach copywriter. Write personalized, specific messages.",
     `Write outreach for ${prospect.first_name || "the owner"} at "${prospect.company_name}" (${prospect.industry}, ${prospect.country}).
 Website audit: ${prospect.audit_summary || "no website"}.
 Value prop: $500/mo managed website, 30-day launch, client owns code, AWS hosting included.
+${calLine}
 Return JSON: { email_subject, email_body, whatsapp_message, linkedin_note, linkedin_inmail, voice_script }`
   );
 
@@ -355,6 +362,119 @@ Return JSON: { email_subject, email_body, whatsapp_message, linkedin_note, linke
     },
     status: "outreach_ready",
   };
+}
+
+/**
+ * Real SES send when SENDER_EMAIL + SES are configured; otherwise stays outreach_ready with reason.
+ * Set OUTREACH_AUTO_SEND=0 to generate drafts only. OUTREACH_DRY_RUN=1 marks sent without calling SES.
+ */
+async function stageSendOutreach(prospect) {
+  const draft = prospect.outreach?.email || {};
+  const subject = draft.subject || "Quick idea for your website";
+  let bodyHtml = draft.body || "";
+  const calLink = config.outreach.calendlyLink;
+  if (calLink && bodyHtml && !bodyHtml.includes(calLink)) {
+    bodyHtml += `\n\n<p><a href="${calLink}">Book a quick call</a></p>`;
+  } else if (calLink && !bodyHtml.trim()) {
+    bodyHtml = `<p>I'd love to share a quick idea — <a href="${calLink}">grab a time here</a>.</p>`;
+  }
+
+  const email = prospect.email?.trim();
+  if (!email) {
+    log.warn(`No email for prospect ${prospect.id}; cannot deliver`);
+    return {
+      status: "outreach_ready",
+      outreach: {
+        ...prospect.outreach,
+        email: {
+          ...draft,
+          body: bodyHtml || draft.body,
+          delivery_status: "blocked_no_email",
+          note: "Add prospect email to send",
+        },
+      },
+    };
+  }
+
+  const autoOff = process.env.OUTREACH_AUTO_SEND === "0" || process.env.OUTREACH_AUTO_SEND === "false";
+  if (autoOff) {
+    return {
+      status: "outreach_ready",
+      outreach: {
+        ...prospect.outreach,
+        email: { ...draft, body: bodyHtml || draft.body, delivery_status: "auto_send_disabled" },
+      },
+    };
+  }
+
+  if (!hasSenderIdentity()) {
+    return {
+      status: "outreach_ready",
+      outreach: {
+        ...prospect.outreach,
+        email: {
+          ...draft,
+          body: bodyHtml || draft.body,
+          delivery_status: "missing_sender",
+          note: "Set SENDER_EMAIL (and SES identity) on the worker Lambda",
+        },
+      },
+    };
+  }
+
+  const dryRun = process.env.OUTREACH_DRY_RUN === "1" || process.env.OUTREACH_DRY_RUN === "true";
+  if (dryRun) {
+    log.info("OUTREACH_DRY_RUN: skipping SES", { to: email, subject });
+    return {
+      status: "sent",
+      outreach: {
+        ...prospect.outreach,
+        email: {
+          ...draft,
+          body: bodyHtml,
+          delivery_status: "dry_run",
+          sent_at: new Date().toISOString(),
+        },
+      },
+    };
+  }
+
+  try {
+    const bodyText = stripHtml(bodyHtml);
+    const { messageId } = await sendOutreachEmail({ to: email, subject, bodyHtml, bodyText });
+    await logActivity({
+      type: "outreach_sent",
+      detail: `SES to ${email}`,
+      prospect_id: prospect.id,
+    });
+    return {
+      status: "sent",
+      outreach: {
+        ...prospect.outreach,
+        email: {
+          ...draft,
+          body: bodyHtml,
+          delivery_status: "delivered",
+          sent_at: new Date().toISOString(),
+          ses_message_id: messageId,
+        },
+      },
+    };
+  } catch (err) {
+    log.error("SES send failed", { error: err.message, prospect_id: prospect.id });
+    return {
+      status: "outreach_ready",
+      outreach: {
+        ...prospect.outreach,
+        email: {
+          ...draft,
+          body: bodyHtml,
+          delivery_status: "send_failed",
+          error: err.message,
+        },
+      },
+    };
+  }
 }
 
 // ---- Discovery (for POST /api/pipeline/discover) ----
@@ -592,7 +712,11 @@ async function extractContactsFromWebsite(companyName, websiteContent) {
   };
 }
 
-async function verifyProspect(prospect) {
+/**
+ * @param {object} prospect
+ * @param {{ pages?: Array<{ url: string, title?: string, text: string }> } | null} enrichmentContext — if set, reuse multi-page text instead of re-scraping homepage only
+ */
+async function verifyProspect(prospect, enrichmentContext = null) {
   log.info(`Verifying prospect: ${prospect.company_name}`);
   const v = {
     website_live: false, website_http_status: 0, website_title: null, website_description: null,
@@ -626,13 +750,31 @@ async function verifyProspect(prospect) {
     }
   }
 
+  const useEnrichmentPages = enrichmentContext?.pages?.length > 0;
   if (v.website_live && prospect.company_website) {
     try {
-      const scraped = await scrapeWebsite(prospect.company_website);
-      if (!scraped.error && scraped.content) {
-        const contactData = await extractContactsFromWebsite(prospect.company_name, scraped.content);
-        Object.assign(v, contactData);
+      let contentForContacts = "";
+      let scrapedTitle = "";
+      let scrapedMeta = "";
+      if (useEnrichmentPages) {
+        contentForContacts = enrichmentContext.pages.map((p) => p.text).join("\n\n");
+        scrapedTitle = enrichmentContext.pages[0]?.title || "";
         if (!v.data_sources.includes("website_scrape")) v.data_sources.push("website_scrape");
+        notes.push(`Using ${enrichmentContext.pages.length} enriched page(s) for contact extraction.`);
+      } else {
+        const scraped = await scrapeWebsite(prospect.company_website);
+        if (scraped.error || !scraped.content) {
+          throw new Error(scraped.error || "empty scrape");
+        }
+        contentForContacts = scraped.content;
+        scrapedTitle = scraped.title;
+        scrapedMeta = scraped.meta_description || "";
+        if (!v.data_sources.includes("website_scrape")) v.data_sources.push("website_scrape");
+      }
+
+      if (contentForContacts) {
+        const contactData = await extractContactsFromWebsite(prospect.company_name, contentForContacts);
+        Object.assign(v, contactData);
 
         if (contactData.extracted_contact_name && !prospect.first_name) {
           const nameParts = contactData.extracted_contact_name.split(" ");
@@ -661,14 +803,15 @@ async function verifyProspect(prospect) {
           prospect.linkedin_url = contactData.extracted_social.linkedin;
         }
 
+        const auditChunk = contentForContacts.slice(0, 2000);
         const auditResult = await askGroq(
           "You are a website UX/conversion auditor. Be concise.",
           `Audit this website for "${prospect.company_name}" (${prospect.company_website}):\n` +
-          `Title: ${scraped.title}\nMeta: ${scraped.meta_description}\n` +
-          `Content (first 2000 chars): ${scraped.content?.slice(0, 2000)}\n\n` +
+          `Title: ${scrapedTitle}\nMeta: ${scrapedMeta}\n` +
+          `Content (first 2000 chars): ${auditChunk}\n\n` +
           `Return JSON: { "summary": string (2-3 sentence audit), "website_status": "live"|"outdated"|"weak" }`
         );
-        prospect.audit_summary = auditResult.summary || `Website title: ${scraped.title || "N/A"}. ${scraped.meta_description || ""}`;
+        prospect.audit_summary = auditResult.summary || `Website title: ${scrapedTitle || "N/A"}. ${scrapedMeta || ""}`;
         prospect.website_status = auditResult.website_status || "live";
       }
     } catch (err) {
@@ -743,7 +886,7 @@ export async function discoverProspects(searchConfig) {
   const errors = [];
 
   let bizData = [];
-  let source = "explorium";
+  let discoverySource = "explorium";
   try {
     bizData = await discoverViaExplorium(country, industry, limit);
     log.info(`Explorium returned ${bizData.length} businesses`);
@@ -755,7 +898,7 @@ export async function discoverProspects(searchConfig) {
 
   if (bizData.length === 0 && BRAVE_KEY) {
     log.info("Explorium returned nothing, falling back to Brave Search discovery");
-    source = "brave_search";
+    discoverySource = "brave_search";
     try {
       bizData = await discoverViaBraveSearch(country, industry, limit);
       log.info(`Brave Search returned ${bizData.length} businesses`);
@@ -768,7 +911,7 @@ export async function discoverProspects(searchConfig) {
 
   if (bizData.length === 0) {
     log.info("No results from primary sources, using Groq LLM fallback (results will be verified)");
-    source = "groq_llm";
+    discoverySource = "groq_llm";
     try {
       bizData = await discoverViaGroqFallback(country, industry, limit);
       log.info(`Groq fallback returned ${bizData.length} businesses`);
@@ -785,10 +928,28 @@ export async function discoverProspects(searchConfig) {
 
   for (const biz of bizData) {
     try {
-      log.info(`Verifying & enriching: ${biz.company_name}`);
+      biz.enrichment_status = "pending";
+      log.info(`Deep enriching: ${biz.company_name}`);
+      send("progress", { stage: "enriching", company: biz.company_name });
+
+      let enrichmentPages = [];
+      let enrichmentDetails = {};
+      try {
+        const enriched = await deepEnrichProspect(biz);
+        enrichmentPages = enriched.pages || [];
+        enrichmentDetails = enriched.enrichment_details || {};
+        biz.enrichment_status = "complete";
+        biz.enrichment_details = enrichmentDetails;
+      } catch (enrErr) {
+        log.warn(`Deep enrich failed for ${biz.company_name}`, { error: enrErr.message });
+        biz.enrichment_status = "failed";
+        biz.enrichment_details = { errors: [enrErr.message] };
+      }
+
+      log.info(`Verifying: ${biz.company_name}`);
       send("progress", { stage: "verifying", company: biz.company_name });
 
-      const verification = await verifyProspect(biz);
+      const verification = await verifyProspect(biz, enrichmentPages.length ? { pages: enrichmentPages } : null);
       const qualityScore = calculateQualityScore(biz, verification);
       const status = statusFromQualityScore(qualityScore);
       verification.quality_score = qualityScore;
@@ -801,6 +962,12 @@ export async function discoverProspects(searchConfig) {
         continue;
       }
 
+      const gate = strictDisplayGate({ ...biz, quality_score: qualityScore }, verification);
+      let notes = biz.notes || null;
+      if (!gate.display_eligible) {
+        notes = `${notes || ""}\n[Hidden from default list] ${gate.rejection_reason || "strict_gate"}`.trim();
+      }
+
       const prospect = createProspect({
         ...biz,
         status,
@@ -808,10 +975,12 @@ export async function discoverProspects(searchConfig) {
         verification,
         data_sources: verification.data_sources,
         website_status: biz.website_status || (verification.website_live ? "live" : "unknown"),
+        display_eligible: gate.display_eligible,
+        notes,
       });
       await saveProspect(prospect);
       created.push(prospect);
-      log.info(`Saved verified prospect: ${prospect.first_name || "?"} ${prospect.last_name || "?"} at ${prospect.company_name} (quality: ${qualityScore})`);
+      log.info(`Saved prospect: ${prospect.company_name} quality=${qualityScore} display_eligible=${gate.display_eligible}`);
     } catch (err) {
       log.error(`Failed to process prospect ${biz.company_name}: ${err.message}`);
       errors.push(`Failed for ${biz.company_name}: ${err.message}`);
@@ -822,7 +991,7 @@ export async function discoverProspects(searchConfig) {
     throw new Error(`Discovery verified 0 prospects. Errors: ${errors.join("; ")}`);
   }
 
-  return created;
+  return { created, discoverySource };
 }
 
 // ---- Exported for Lambda (worker-lambda.js) and forked CLI ----
@@ -833,11 +1002,13 @@ export async function executePipelineRun(run) {
 
   try {
     if (run.config?.mode === "discover") {
-      const created = await discoverProspects(run.config);
+      const { created, discoverySource } = await discoverProspects(run.config);
       run.prospects_processed = created.length;
-      const source = created[0]?.source_trace?.startsWith("groq:") ? "Groq LLM" : "Explorium";
-      await logActivity({ type: "discovery_completed", detail: `Discovered ${created.length} new prospects via ${source}` });
-      send("progress", { discovered: created.length, source });
+      const sourceLabel = discoverySource === "groq_llm" ? "Groq LLM"
+        : discoverySource === "brave_search" ? "Brave Search"
+          : "Explorium";
+      await logActivity({ type: "discovery_completed", detail: `Discovered ${created.length} new prospects via ${sourceLabel}` });
+      send("progress", { discovered: created.length, source: sourceLabel });
     } else {
       const prospects = await listProspects();
       const processable = prospects.filter(p => !["won", "lost", "suppressed", "sent", "responded", "meeting_booked"].includes(p.status));

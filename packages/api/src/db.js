@@ -1,5 +1,5 @@
 import { DynamoDBClient, DescribeTableCommand } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, UpdateCommand, DeleteCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, GetCommand, QueryCommand, DeleteCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { config } from "@outreach-tool/shared/config";
 
 const client = new DynamoDBClient({ region: config.aws.region });
@@ -203,6 +203,6 @@ export async function checkSuppression(identifier) {
 }
 
 function stripKeys(item) {
-  const { PK, SK, GSI1PK, GSI1SK, ...rest } = item;
+  const { PK: _pk, SK: _sk, GSI1PK: _g1, GSI1SK: _g2, ...rest } = item;
   return rest;
 }

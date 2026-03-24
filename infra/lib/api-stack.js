@@ -48,14 +48,23 @@ export class ApiStack extends cdk.Stack {
       externalModules: [],
     };
 
+    /** Playwright is dynamic-import only; keep external so CDK zip bundle works without Docker. */
+    const workerBundling = {
+      ...bundling,
+      externalModules: ["playwright", "playwright-core"],
+    };
+
     const workerFn = new NodejsFunction(this, "PipelineWorkerFn", {
       entry: path.join(repoRoot, "packages/api/src/worker-lambda.js"),
       handler: "handler",
       runtime: lambda.Runtime.NODEJS_20_X,
       timeout: cdk.Duration.minutes(15),
-      memorySize: 1024,
-      environment: buildLambdaEnv(table.tableName, bucket.bucketName),
-      bundling,
+      memorySize: 3008,
+      environment: {
+        ...buildLambdaEnv(table.tableName, bucket.bucketName),
+        PLAYWRIGHT_ENABLED: process.env.PLAYWRIGHT_ENABLED || "0",
+      },
+      bundling: workerBundling,
     });
     table.grantReadWriteData(workerFn);
     bucket.grantReadWrite(workerFn);

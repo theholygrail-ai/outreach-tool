@@ -41,7 +41,7 @@ This deploys **OutreachTool-Billing**, **OutreachTool-Data** (DynamoDB + S3), an
 
 3. Copy **ApiFunctionUrl** from the CDK output (no trailing slash).
 
-4. **Configure secrets on both Lambdas** (HTTP API + pipeline worker): Lambda → Configuration → Environment variables — same keys as local `.env` (`GROQ_API_KEY`, `EXPLORIUM_API_KEY`, `SES_*`, `CALENDLY_*`, etc.). Do **not** commit API keys to git.
+4. **Configure secrets on both Lambdas** (HTTP API + pipeline worker): Lambda → Configuration → Environment variables — same keys as local `.env` (`GROQ_API_KEY`, `EXPLORIUM_API_KEY`, `SES_*`, `SENDER_EMAIL`, `CALENDLY_*`, `CALENDLY_LINK`, etc.). **Live email** sends from the **worker** at stage `outreach_ready` via SES (`OUTREACH_AUTO_SEND=0` disables; `OUTREACH_DRY_RUN=1` skips SES). Do **not** commit API keys to git.
 
 5. Optional: set `PUBLIC_API_URL` on both functions to the Function URL. Calendly webhook: `{ApiFunctionUrl}/api/webhooks/calendly`.
 

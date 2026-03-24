@@ -276,6 +276,8 @@ td:first-child { color: var(--text); font-weight: 500; }
 /* Needs-review & unverified status badges */
 .badge-needs_review { background: var(--warning-muted); color: var(--warning); }
 .badge-unverified { background: var(--danger-muted); color: var(--danger); }
+.badge-visible { background: var(--success-muted); color: var(--success); }
+.badge-hidden { background: var(--danger-muted); color: var(--danger); }
 
 /* Audit report */
 .audit-report { padding: 0.5rem 0; }

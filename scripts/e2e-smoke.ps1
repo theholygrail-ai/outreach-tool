@@ -15,7 +15,16 @@ $BaseUrl = $BaseUrl.TrimEnd("/")
 
 $paths = @(
   "/api/health",
+  "/api/health/ready",
   "/api/prospects",
+  "/api/prospects?visibility=default",
+  "/api/prospects?visibility=all",
+  "/api/pipeline/stats",
+  "/api/pipeline/status",
+  "/api/pipeline/runs",
+  "/api/activity?limit=5",
+  "/api/bookings",
+  "/api/tools/status",
   "/api/settings"
 )
 

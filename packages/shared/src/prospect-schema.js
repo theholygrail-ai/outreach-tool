@@ -33,6 +33,9 @@ export const PROSPECT_FIELDS = [
   "calendly_link_used",
   "notes",
   "source_trace",
+  "enrichment_status",
+  "enrichment_details",
+  "display_eligible",
   "created_at",
   "updated_at",
 ];
@@ -70,7 +73,15 @@ export function createProspect(data = {}) {
     calendly_link_used: data.calendly_link_used || null,
     notes: data.notes || null,
     source_trace: data.source_trace || null,
+    enrichment_status: data.enrichment_status ?? null,
+    enrichment_details: data.enrichment_details ?? null,
+    display_eligible: data.display_eligible !== undefined ? data.display_eligible : undefined,
     created_at: data.created_at || now,
     updated_at: now,
   };
+}
+
+/** Legacy rows have no display_eligible — treat as visible in lists */
+export function isProspectListVisible(p) {
+  return p.display_eligible !== false;
 }

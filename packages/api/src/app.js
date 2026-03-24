@@ -1,8 +1,9 @@
 import { config } from "@outreach-tool/shared/config";
 import { createLogger } from "@outreach-tool/shared/logger";
-import { createProspect } from "@outreach-tool/shared/prospect-schema";
+import { createProspect, isProspectListVisible } from "@outreach-tool/shared/prospect-schema";
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
 import crypto from "crypto";
 import { fork } from "child_process";
 import { fileURLToPath } from "url";
@@ -11,9 +12,25 @@ import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import * as db from "./db.js";
 import { addClient, broadcast } from "./events.js";
 import { buildSettingsSnapshot, runConnectorTest } from "./settings-lib.js";
+import { hasSenderIdentity } from "@outreach-tool/shared/ses-send";
 
 const log = createLogger("api");
 const app = express();
+
+/** JSON API: disable CSP (not serving HTML). Other helmet defaults apply. */
+app.use(helmet({ contentSecurityPolicy: false }));
+
+/** Correlate logs / support tickets with client or generate UUID. */
+app.use((req, res, next) => {
+  const incoming = req.headers["x-request-id"] || req.headers["x-correlation-id"];
+  const rid =
+    typeof incoming === "string" && incoming.trim().length > 0
+      ? incoming.trim().slice(0, 128)
+      : crypto.randomUUID();
+  res.setHeader("X-Request-Id", rid);
+  req.requestId = rid;
+  next();
+});
 
 const isLambda = !!process.env.AWS_LAMBDA_FUNCTION_NAME;
 if (!isLambda) {
@@ -52,6 +69,17 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+/** Readiness: verifies DynamoDB (same credentials as app data plane). */
+app.get("/api/health/ready", async (req, res) => {
+  try {
+    await db.pingDynamo();
+    res.json({ ok: true, dynamo: "ok", ts: Date.now() });
+  } catch (err) {
+    log.error("ready check failed", { error: err.message });
+    res.status(503).json({ ok: false, error: err.message });
+  }
+});
+
 
 // --- Settings (connectors + endpoint catalog; secrets masked) ---
 app.get("/api/settings", (req, res) => {
@@ -86,8 +114,13 @@ app.get("/api/events", (req, res) => {
 // --- Prospects ---
 app.get("/api/prospects", async (req, res) => {
   try {
+    const visibility = (req.query.visibility || "default").toLowerCase();
     const prospects = await db.listProspects();
-    res.json(prospects);
+    if (visibility === "all") {
+      res.json(prospects);
+    } else {
+      res.json(prospects.filter(isProspectListVisible));
+    }
   } catch (err) {
     log.error("list prospects", { error: err.message });
     res.status(500).json({ error: err.message });
@@ -182,10 +215,18 @@ app.get("/api/activity", async (req, res) => {
 app.get("/api/pipeline/stats", async (req, res) => {
   try {
     const prospects = await db.listProspects();
+    const visible = prospects.filter(isProspectListVisible);
+    const hiddenCount = prospects.length - visible.length;
     const stats = {};
-    for (const p of prospects) stats[p.status] = (stats[p.status] || 0) + 1;
+    for (const p of visible) stats[p.status] = (stats[p.status] || 0) + 1;
     const running = await db.getRunningPipelineRun();
-    res.json({ total: prospects.length, by_status: stats, pipeline_status: running ? "running" : "idle" });
+    res.json({
+      total: visible.length,
+      total_all: prospects.length,
+      hidden_count: hiddenCount,
+      by_status: stats,
+      pipeline_status: running ? "running" : "idle",
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -275,6 +316,20 @@ app.get("/api/pipeline/runs", async (req, res) => {
   }
 });
 
+/** Single run for operator drill-down (includes duration when completed). */
+app.get("/api/pipeline/runs/:id", async (req, res) => {
+  try {
+    const run = await db.getPipelineRun(req.params.id);
+    if (!run) return res.status(404).json({ error: "Not found" });
+    const started = run.started_at ? new Date(run.started_at).getTime() : null;
+    const completed = run.completed_at ? new Date(run.completed_at).getTime() : null;
+    const duration_ms = started != null && completed != null ? completed - started : null;
+    res.json({ ...run, duration_ms });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Bookings ---
 app.get("/api/bookings", async (req, res) => {
   try {
@@ -326,11 +381,19 @@ app.get("/api/tools/status", (req, res) => {
   res.json({
     explorium: { status: config.explorium.apiKey ? "configured" : "not_configured" },
     stitch: { status: "requires_auth" },
-    vercel: { status: "requires_auth" },
+    vercel: { status: config.vercel?.token ? "configured" : "not_configured" },
     screenshot: { status: "available" },
-    ses: { status: "sandbox" },
+    ses: {
+      status: hasSenderIdentity() ? "sender_configured" : "not_configured",
+      region: config.ses.region,
+      note: "Pipeline uses SES on the worker Lambda; verify domain/email in SES and attach iam:SendEmail to the role or set SES_* keys.",
+    },
     calendly: { status: config.calendly?.clientId ? "configured" : "not_configured" },
     groq: { status: config.groq.apiKey ? "connected" : "not_configured" },
+    outreach: {
+      auto_send: process.env.OUTREACH_AUTO_SEND !== "0" && process.env.OUTREACH_AUTO_SEND !== "false",
+      dry_run: process.env.OUTREACH_DRY_RUN === "1" || process.env.OUTREACH_DRY_RUN === "true",
+    },
   });
 });
 

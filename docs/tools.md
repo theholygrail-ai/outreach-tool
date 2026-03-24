@@ -255,7 +255,7 @@ aws ce get-cost-and-usage \
 
 | Tool | Channel | Status |
 |------|---------|--------|
-| `send_email` | Email via AWS SES | Stub -- wire SES SDK |
+| `send_email` | Email via AWS SES | **`@outreach-tool/shared/ses-send`** — used by **agents CLI**, **HTTP app** (`hasSenderIdentity`), and **pipeline worker** at `outreach_ready` → `sent`. |
 | `queue_whatsapp_message` | WhatsApp | Queue for manual/API delivery |
 | `queue_linkedin_message` | LinkedIn | Queue for manual/API delivery |
 | `generate_voice_note_script` | Voice | LLM generates script |

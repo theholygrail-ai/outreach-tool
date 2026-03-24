@@ -5,20 +5,30 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
-    "express": "^5",
-    "cors": "^2",
-    "multer": "^2",
-    "csv-parse": "^5",
-    "node-cron": "^3",
     "@aws-sdk/client-dynamodb": "^3",
-    "@aws-sdk/lib-dynamodb": "^3",
+    "@aws-sdk/client-lambda": "^3",
     "@aws-sdk/client-s3": "^3",
     "@aws-sdk/client-ses": "^3",
-    "@aws-sdk/client-lambda": "^3",
-    "serverless-http": "^3.2.0",
-    "dotenv": "^16"
+    "@aws-sdk/lib-dynamodb": "^3",
+    "@outreach-tool/shared": "*",
+    "cors": "^2",
+    "csv-parse": "^5",
+    "dotenv": "^16",
+    "express": "^5",
+    "helmet": "^8.1.0",
+    "multer": "^2",
+    "node-cron": "^3",
+    "openai": "^4.0.0",
+    "playwright": "^1.49.1",
+    "serverless-http": "^3.2.0"
+  },
+  "devDependencies": {
+    "supertest": "^7.0.0",
+    "vitest": "^3.0.0"
   }
 }

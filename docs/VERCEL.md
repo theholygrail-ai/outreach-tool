@@ -41,7 +41,7 @@ Set for **Production** and **Preview** (and **Development** if you use it):
 |------|--------|
 | `VITE_API_URL` | Your AWS Lambda **Function URL** (no trailing slash), e.g. `https://xxxxx.lambda-url.us-east-1.on.aws` |
 
-Without `VITE_API_URL`, the app expects the API on the same origin (local dev with Vite proxy only).
+Without `VITE_API_URL`, the app expects the API on the same origin (local dev with Vite proxy only). **Static-only CLI deploys** (uploading `packages/web/dist` without env) must set the API in **`packages/web/public/api-config.json`** (`"apiBase": "https://…lambda-url…on.aws"`, no trailing slash), then run `npm run build:web` and redeploy — or the UI will show “API not configured”.
 
 ## 5. CLI (optional, not required)
 
