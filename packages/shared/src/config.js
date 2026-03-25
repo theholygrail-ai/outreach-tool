@@ -78,7 +78,7 @@ export const config = {
     maxPages: parseInt(process.env.ENRICH_MAX_PAGES, 10) || 8,
     playwrightEnabled: process.env.PLAYWRIGHT_ENABLED === "1" || process.env.PLAYWRIGHT_ENABLED === "true",
     /** Minimum quality score after verify to be list-eligible */
-    strictMinQuality: parseInt(process.env.STRICT_MIN_QUALITY, 10) || 45,
+    strictMinQuality: parseInt(process.env.STRICT_MIN_QUALITY, 10) || 40,
     /**
      * Minimum score to keep a lead from discovery (after adjustScoreForDiscoveryPipeline).
      * Base verify scores are harsh when the site is down or Brave does not match Arabic names — default is below the old hardcoded 30.
@@ -87,10 +87,21 @@ export const config = {
     /** If false, skip contact-field requirements (quality only) */
     strictRequireContact: process.env.STRICT_REQUIRE_CONTACT !== "0",
     /**
-     * email_only — require a syntactically valid email only.
-     * email_plus_alt — require (email && phone) OR (email && linkedin_url).
+     * any_one_contact (default when env unset) — valid email OR dialable phone OR LinkedIn /in/ URL.
+     * email_only — valid email only.
+     * email_plus_alt — (email && phone) OR (email && linkedin).
+     * firmographic — live website + company name + website URL (no person contact required).
      */
-    strictContactMode: process.env.STRICT_CONTACT_MODE === "email_only" ? "email_only" : "email_plus_alt",
+    strictContactMode: (() => {
+      const raw = process.env.STRICT_CONTACT_MODE;
+      if (raw == null || String(raw).trim() === "") return "any_one_contact";
+      const m = String(raw).toLowerCase().trim();
+      if (m === "email_only") return "email_only";
+      if (m === "email_plus_alt") return "email_plus_alt";
+      if (m === "firmographic") return "firmographic";
+      if (m === "any_one_contact" || m === "relaxed") return "any_one_contact";
+      return "email_plus_alt";
+    })(),
     abstractApiKey: process.env.ABSTRACT_API_KEY || null,
     companiesHouseApiKey: process.env.COMPANIES_HOUSE_API_KEY || null,
     /** Re-run full verify in pipeline when older than this many days */

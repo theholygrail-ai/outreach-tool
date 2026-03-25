@@ -3,7 +3,11 @@
  */
 import { createLogger } from "@outreach-tool/shared/logger";
 import { apolloPeopleMatch } from "./providers/apollo.js";
-import { hunterDomainSearch, hunterEmailFinder } from "./providers/hunter.js";
+import {
+  applyHunterDomainEmailsToProspect,
+  hunterDomainSearch,
+  hunterEmailFinder,
+} from "./providers/hunter.js";
 
 const log = createLogger("third-party-enrich");
 
@@ -27,23 +31,6 @@ function applyApolloPerson(prospect, person) {
   if (person.title && !prospect.executive_role) prospect.executive_role = person.title;
   if (person.first_name && !prospect.first_name) prospect.first_name = person.first_name;
   if (person.last_name && !prospect.last_name) prospect.last_name = person.last_name;
-}
-
-function pickHunterEmail(emails, firstName, lastName) {
-  if (!Array.isArray(emails) || emails.length === 0) return null;
-  const fn = (firstName || "").toLowerCase();
-  const ln = (lastName || "").toLowerCase();
-  if (fn || ln) {
-    const byName = emails.find((e) => {
-      const f = (e.first_name || "").toLowerCase();
-      const l = (e.last_name || "").toLowerCase();
-      return (fn && f.includes(fn)) || (ln && l.includes(ln)) || (fn && ln && f.includes(fn) && l.includes(ln));
-    });
-    if (byName?.value) return byName.value;
-  }
-  const generic = emails.find((e) => e.type === "generic" && e.value);
-  if (generic?.value) return generic.value;
-  return emails[0]?.value || null;
 }
 
 /**
@@ -77,11 +64,7 @@ export async function runVendorEnrichment(prospect) {
       out.hunter.domain_search = ds.error ? { error: ds.error } : { emails_found: ds.data?.emails?.length ?? 0 };
 
       if (!ds.error && ds.data?.emails?.length) {
-        const email = pickHunterEmail(ds.data.emails, prospect.first_name, prospect.last_name);
-        if (email && !prospect.email) {
-          prospect.email = email;
-          if (!prospect.data_sources.includes("hunter")) prospect.data_sources.push("hunter");
-        }
+        applyHunterDomainEmailsToProspect(prospect, ds.data.emails);
       }
 
       if (prospect.first_name && prospect.last_name && !prospect.email) {

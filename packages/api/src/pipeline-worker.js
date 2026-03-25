@@ -17,6 +17,7 @@ import { discoverViaBrightData } from "./discovery/brightdata-discovery.js";
 import { resolveMxForEmail } from "./enrichment/providers/mx-dns.js";
 import { validateEmailAbstract } from "./enrichment/providers/abstract-email.js";
 import { hunterVerifyEmail } from "./enrichment/providers/hunter.js";
+import { backfillProspectContactsFromVendors } from "./enrichment/contact-backfill.js";
 import { searchCompaniesHouse } from "./enrichment/providers/companies-house.js";
 import { auditLinkedInAffiliation, extractAllLinkedInUrls, pickBestPersonLinkedInFromPage, parseLinkedInUrl } from "./enrichment/linkedin-audit.js";
 import { sanitizeGroqWebsiteContacts, agentRankEmailCandidates } from "./enrichment/grounding.js";
@@ -987,6 +988,25 @@ async function verifyProspect(prospect, enrichmentContext = null) {
   if (liAudit.status === "verified" && !v.data_sources.includes("linkedin_affiliation_audit")) {
     v.data_sources.push("linkedin_affiliation_audit");
   }
+
+  if (!prospect.email && v.extracted_emails?.length) {
+    prospect.email = v.extracted_emails[0];
+    notes.push(`Using first extracted email as primary: ${prospect.email}`);
+  }
+  if (!prospect.phone_number && v.extracted_phones?.length) {
+    prospect.phone_number = v.extracted_phones[0];
+    notes.push("Using first extracted phone as primary.");
+  }
+  if (!prospect.linkedin_url && v.extracted_social?.linkedin) {
+    prospect.linkedin_url = v.extracted_social.linkedin;
+  }
+  if (!prospect.first_name && v.extracted_contact_name) {
+    const parts = String(v.extracted_contact_name).trim().split(/\s+/);
+    prospect.first_name = parts[0] || null;
+    prospect.last_name = parts.slice(1).join(" ") || null;
+  }
+
+  await backfillProspectContactsFromVendors(prospect);
 
   v.email_format_valid = isValidEmail(prospect.email);
   v.email_domain_matches_website = emailDomainMatchesWebsite(prospect.email, prospect.company_website);

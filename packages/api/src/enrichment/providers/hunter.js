@@ -15,10 +15,51 @@ function withKey(path, searchParams) {
 }
 
 /**
- * @returns {Promise<{ skipped?: boolean, error?: string, data?: object }>}
+ * Pick best Hunter domain-search row: name match if possible, else highest-confidence personal → generic.
+ * Mutates prospect (email, first_name, last_name) when empty; tags data_sources with "hunter".
+ * @param {object} prospect
+ * @param {object[]} emails — Hunter `data.emails`
+ * @returns {boolean} true if an email was applied
  */
+export function applyHunterDomainEmailsToProspect(prospect, emails) {
+  if (!Array.isArray(emails) || emails.length === 0) return false;
+  if (!prospect.data_sources) prospect.data_sources = [];
+
+  const fn = (prospect.first_name || "").toLowerCase();
+  const ln = (prospect.last_name || "").toLowerCase();
+  let chosen = null;
+  if (fn || ln) {
+    chosen = emails.find((e) => {
+      const f = (e.first_name || "").toLowerCase();
+      const l = (e.last_name || "").toLowerCase();
+      return (
+        (fn && f.includes(fn)) ||
+        (ln && l.includes(ln)) ||
+        (fn && ln && f.includes(fn) && l.includes(ln))
+      );
+    });
+  }
+  if (!chosen?.value) {
+    const sorted = [...emails]
+      .filter((e) => e.value)
+      .sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0));
+    chosen =
+      sorted.find((e) => e.type === "personal") ||
+      sorted.find((e) => e.type === "generic") ||
+      sorted[0];
+  }
+  const email = chosen?.value;
+  if (!email) return false;
+
+  if (!prospect.email) prospect.email = email;
+  if (chosen.first_name && !prospect.first_name) prospect.first_name = chosen.first_name;
+  if (chosen.last_name && !prospect.last_name) prospect.last_name = chosen.last_name;
+  if (!prospect.data_sources.includes("hunter")) prospect.data_sources.push("hunter");
+  return true;
+}
+
 export async function hunterDomainSearch(domain) {
-  const url = withKey("/domain-search", { domain, limit: "15" });
+  const url = withKey("/domain-search", { domain, limit: "30" });
   if (!url) return { skipped: true };
 
   const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
