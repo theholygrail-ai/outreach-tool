@@ -78,9 +78,13 @@ export function hasResolvableCompanyWebsite(w) {
 export function adjustScoreForDiscoveryPipeline(prospect, baseScore) {
   let s = Number(baseScore) || 0;
   const trace = prospect?.source_trace || "";
+  const ds = prospect?.data_sources || [];
   if (trace.startsWith("explorium:")) s += 18;
+  else if (trace.startsWith("apollo:") || ds.includes("apollo_discovery")) s += 20;
+  else if (trace.startsWith("hunter:") || ds.includes("hunter_discover")) s += 16;
+  else if (trace.startsWith("brightdata:") || ds.includes("brightdata_discovery")) s += 14;
   else if (trace.includes("groq")) s += 26;
-  else if ((prospect?.data_sources || []).includes("brave_search") || trace === "brave_search") s += 14;
+  else if (ds.includes("brave_search") || trace === "brave_search") s += 14;
 
   if (hasResolvableCompanyWebsite(prospect?.company_website)) s += 10;
 

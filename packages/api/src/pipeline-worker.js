@@ -10,6 +10,10 @@ import { strictDisplayGate } from "./enrichment/strict-gate.js";
 import { takeEnrichmentSnapshot, buildFieldResolution } from "./enrichment/enrichment-snapshot.js";
 import { runCrossCheck } from "./enrichment/cross-check.js";
 import { adjustScoreForDiscoveryPipeline, calculateQualityScore } from "./enrichment/quality-score.js";
+import { mergeDiscoveryRows } from "./discovery/dedupe.js";
+import { discoverViaApollo } from "./discovery/apollo-discovery.js";
+import { discoverViaHunter } from "./discovery/hunter-discovery.js";
+import { discoverViaBrightData } from "./discovery/brightdata-discovery.js";
 import { resolveMxForEmail } from "./enrichment/providers/mx-dns.js";
 import { validateEmailAbstract } from "./enrichment/providers/abstract-email.js";
 import { hunterVerifyEmail } from "./enrichment/providers/hunter.js";
@@ -532,7 +536,7 @@ async function stageSendOutreach(prospect) {
 // ---- Discovery (for POST /api/pipeline/discover) ----
 
 async function discoverViaExplorium(country, industry, limit) {
-  const n = limit || 10;
+  const n = limit || 50;
   const businesses = await mcpCall("fetch_businesses", {
     country_code: country || "US",
     company_size_max: 100,
@@ -608,7 +612,7 @@ async function braveSearch(query, count = 10, country = "") {
 }
 
 async function discoverViaBraveSearch(country, industry, limit) {
-  const n = Math.min(limit || 10, 15);
+  const n = Math.min(limit || 50, 50);
   const cc = country || "US";
   const countryNames = { US: "United States", GB: "United Kingdom", AE: "United Arab Emirates" };
   const countryName = countryNames[cc] || cc;
@@ -1094,7 +1098,7 @@ function statusFromQualityScore(score) {
 // ---- Groq Fallback Discovery (last resort — generates plausible but unverified data) ----
 
 async function discoverViaGroqFallback(country, industry, limit) {
-  const n = Math.min(limit || 10, 15);
+  const n = Math.min(limit || 50, 50);
   const cc = country || "US";
   const countryNames = { US: "United States", GB: "United Kingdom", AE: "United Arab Emirates" };
   const countryName = countryNames[cc] || cc;
@@ -1119,28 +1123,77 @@ async function discoverViaGroqFallback(country, industry, limit) {
 // ---- Discovery (for POST /api/pipeline/discover) ----
 
 export async function discoverProspects(searchConfig) {
-  const { country, industry, limit } = searchConfig;
+  const { country, industry, limit: limitRaw } = searchConfig;
+  const limit = Math.min(100, Math.max(1, limitRaw ?? 50));
   log.info("Discovering prospects", { country, industry, limit });
   const created = [];
   const errors = [];
 
-  let bizData = [];
-  let discoverySource = "explorium";
+  const bizData = [];
+  const seenKeys = new Set();
+  const contributors = [];
+
+  /** Roughly even pull per primary source so Explorium does not consume the whole budget */
+  const sourceCap = Math.max(12, Math.ceil(limit / 4));
+
+  const tryMerge = (label, rows) => {
+    const before = bizData.length;
+    mergeDiscoveryRows(rows, seenKeys, bizData, limit);
+    if (bizData.length > before) contributors.push(label);
+  };
+
   try {
-    bizData = await discoverViaExplorium(country, industry, limit);
-    log.info(`Explorium returned ${bizData.length} businesses`);
+    const rows = await discoverViaExplorium(country, industry, sourceCap);
+    log.info(`Explorium returned ${rows.length} businesses (cap ${sourceCap})`);
+    tryMerge("explorium", rows);
   } catch (err) {
     const msg = `Explorium discovery failed: ${err.message}`;
     log.warn(msg);
     errors.push(msg);
   }
 
-  if (bizData.length === 0 && BRAVE_KEY) {
-    log.info("Explorium returned nothing, falling back to Brave Search discovery");
-    discoverySource = "brave_search";
+  if (config.enrichment?.apolloApiKey) {
     try {
-      bizData = await discoverViaBraveSearch(country, industry, limit);
-      log.info(`Brave Search returned ${bizData.length} businesses`);
+      const rows = await discoverViaApollo(country, industry, Math.min(100, sourceCap + 10));
+      log.info(`Apollo discovery returned ${rows.length} businesses (cap ${sourceCap + 10})`);
+      tryMerge("apollo", rows);
+    } catch (err) {
+      const msg = `Apollo discovery failed: ${err.message}`;
+      log.warn(msg);
+      errors.push(msg);
+    }
+  }
+
+  if (config.enrichment?.hunterApiKey) {
+    try {
+      const rows = await discoverViaHunter(country, industry, sourceCap);
+      log.info(`Hunter discovery returned ${rows.length} businesses (cap ${sourceCap})`);
+      tryMerge("hunter", rows);
+    } catch (err) {
+      const msg = `Hunter discovery failed: ${err.message}`;
+      log.warn(msg);
+      errors.push(msg);
+    }
+  }
+
+  if (config.enrichment?.brightdataApiToken && config.enrichment?.brightdataZone) {
+    try {
+      const rows = await discoverViaBrightData(country, industry, sourceCap, { askGroq });
+      log.info(`Bright Data discovery returned ${rows.length} businesses (cap ${sourceCap})`);
+      tryMerge("brightdata", rows);
+    } catch (err) {
+      const msg = `Bright Data discovery failed: ${err.message}`;
+      log.warn(msg);
+      errors.push(msg);
+    }
+  }
+
+  if (bizData.length < limit && BRAVE_KEY) {
+    try {
+      const need = limit - bizData.length;
+      const rows = await discoverViaBraveSearch(country, industry, Math.max(need, Math.min(20, limit)));
+      log.info(`Brave Search returned ${rows.length} businesses (need ~${need})`);
+      tryMerge("brave_search", rows);
     } catch (err) {
       const msg = `Brave Search discovery failed: ${err.message}`;
       log.warn(msg);
@@ -1149,11 +1202,11 @@ export async function discoverProspects(searchConfig) {
   }
 
   if (bizData.length === 0) {
-    log.info("No results from primary sources, using Groq LLM fallback (results will be verified)");
-    discoverySource = "groq_llm";
+    log.info("No results from API sources, using Groq LLM fallback (results will be verified)");
     try {
-      bizData = await discoverViaGroqFallback(country, industry, limit);
-      log.info(`Groq fallback returned ${bizData.length} businesses`);
+      const rows = await discoverViaGroqFallback(country, industry, limit);
+      log.info(`Groq fallback returned ${rows.length} businesses`);
+      tryMerge("groq_llm", rows);
     } catch (err) {
       const msg = `Groq fallback discovery failed: ${err.message}`;
       log.error(msg);
@@ -1164,6 +1217,9 @@ export async function discoverProspects(searchConfig) {
   if (bizData.length === 0) {
     throw new Error(`Discovery found 0 prospects. Errors: ${errors.join("; ")}`);
   }
+
+  const discoverySource = contributors.length ? [...new Set(contributors)].join("+") : "groq_llm";
+  log.info(`Discovery merged ${bizData.length} unique prospects (limit ${limit}), sources: ${discoverySource}`);
 
   for (const biz of bizData) {
     try {
@@ -1249,9 +1305,15 @@ export async function executePipelineRun(run) {
     if (run.config?.mode === "discover") {
       const { created, discoverySource } = await discoverProspects(run.config);
       run.prospects_processed = created.length;
-      const sourceLabel = discoverySource === "groq_llm" ? "Groq LLM"
-        : discoverySource === "brave_search" ? "Brave Search"
-          : "Explorium";
+      const sourceLabel = discoverySource.includes("+")
+        ? discoverySource.replace(/\+/g, " + ")
+        : discoverySource === "groq_llm"
+          ? "Groq LLM"
+          : discoverySource === "brave_search"
+            ? "Brave Search"
+            : discoverySource === "explorium"
+              ? "Explorium"
+              : discoverySource;
       await logActivity({ type: "discovery_completed", detail: `Discovered ${created.length} new prospects via ${sourceLabel}` });
       send("progress", { discovered: created.length, source: sourceLabel });
     } else {

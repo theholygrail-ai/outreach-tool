@@ -271,7 +271,7 @@ async function renderDashboard() {
       const btn = document.getElementById("btn-discover");
       btn.textContent = "Discovering..."; btn.disabled = true;
       try {
-        const { id: runId } = await api.triggerDiscovery({ country, limit: 10 });
+        const { id: runId } = await api.triggerDiscovery({ country, limit: 50 });
         btn.textContent = "Running...";
         const poll = setInterval(async () => {
           try {

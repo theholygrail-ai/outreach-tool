@@ -295,7 +295,7 @@ app.post("/api/pipeline/discover", async (req, res) => {
       mode: "discover",
       country: req.body.country || "US",
       industry: req.body.industry || null,
-      limit: req.body.limit || 10,
+      limit: Math.min(100, Math.max(1, parseInt(req.body.limit, 10) || 50)),
     };
     const runId = crypto.randomUUID();
     const run = { id: runId, status: "running", config: runConfig, started_at: new Date().toISOString(), prospects_processed: 0, errors: [] };

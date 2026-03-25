@@ -70,4 +70,9 @@ describe("calculateQualityScore", () => {
     const prospect = { source_trace: "explorium:abc123", company_website: null };
     expect(adjustScoreForDiscoveryPipeline(prospect, 5)).toBe(23);
   });
+
+  it("adjustScoreForDiscoveryPipeline boosts Apollo discovery leads", () => {
+    const prospect = { source_trace: "apollo:discovery", company_website: null };
+    expect(adjustScoreForDiscoveryPipeline(prospect, 0)).toBe(20);
+  });
 });
