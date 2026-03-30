@@ -118,6 +118,7 @@ export function buildSettingsSnapshot() {
     { id: "bb_li_session", path: "/api/enrichment/browserbase/linkedin-session", method: "POST", note: "Live browser for LinkedIn login" },
     { id: "bb_li_enrich", path: "/api/enrichment/browserbase/linkedin-enrich", method: "POST" },
     { id: "bb_li_enrich_one", path: "/api/enrichment/browserbase/linkedin-enrich-one", method: "POST", note: "Single prospect modal enrich" },
+    { id: "websearch_enrich_one", path: "/api/enrichment/websearch/enrich-one", method: "POST", note: "Single prospect websearch+grounding enrich" },
     { id: "events_sse", path: "/api/events", method: "GET", note: "SSE stream (probe may abort early)" },
   ];
 

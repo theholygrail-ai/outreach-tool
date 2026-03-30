@@ -109,6 +109,14 @@ export async function browserbaseLinkedInEnrichOne(prospectId, sessionId) {
   });
 }
 
+/** Single prospect websearch enrichment with grounded extraction from website/search sources. */
+export async function websearchEnrichOne(prospectId) {
+  return apiFetch("/api/enrichment/websearch/enrich-one", {
+    method: "POST",
+    body: JSON.stringify({ prospect_id: prospectId }),
+  });
+}
+
 export async function testConnector(connectorId) {
   const res = await fetch(apiUrl(`/api/settings/test/${encodeURIComponent(connectorId)}`), {
     method: "POST",

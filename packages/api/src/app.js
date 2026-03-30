@@ -18,6 +18,7 @@ import {
   enrichProspectsViaLinkedInSession,
   enrichOneProspectLinkedInFlow,
 } from "./enrichment/browserbase-linkedin.js";
+import { deepEnrichProspect } from "./enrichment/deep-enrich.js";
 
 const log = createLogger("api");
 const app = express();
@@ -368,6 +369,71 @@ app.post("/api/enrichment/browserbase/linkedin-enrich-one", async (req, res) => 
     });
   } catch (err) {
     log.error("browserbase linkedin-enrich-one", { error: err.message });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/enrichment/websearch/enrich-one", async (req, res) => {
+  try {
+    const prospectId = req.body?.prospect_id;
+    if (!prospectId) {
+      return res.status(400).json({ error: "prospect_id required" });
+    }
+    const existing = await db.getProspect(prospectId);
+    if (!existing) {
+      return res.status(404).json({ error: "Prospect not found" });
+    }
+
+    const working = {
+      ...existing,
+      data_sources: Array.isArray(existing.data_sources) ? [...existing.data_sources] : [],
+      enrichment_details: { ...(existing.enrichment_details || {}) },
+    };
+    const out = await deepEnrichProspect(working);
+    const detail = out?.enrichment_details || {};
+
+    const merged = { ...existing, updated_at: new Date().toISOString() };
+    for (const k of [
+      "first_name",
+      "last_name",
+      "executive_role",
+      "email",
+      "phone_number",
+      "linkedin_url",
+      "city_or_region",
+      "industry",
+      "company_website",
+      "company_size_estimate",
+    ]) {
+      if (working[k] != null && String(working[k]).trim() !== "") merged[k] = working[k];
+    }
+    merged.data_sources = [...new Set([...(existing.data_sources || []), ...(working.data_sources || [])])];
+    merged.enrichment_details = {
+      ...(existing.enrichment_details || {}),
+      ...(working.enrichment_details || {}),
+      websearch_enrich: {
+        ...(existing.enrichment_details?.websearch_enrich || {}),
+        last_run_at: new Date().toISOString(),
+        last_ok: !detail.errors || detail.errors.length === 0,
+        last_detail: detail,
+      },
+    };
+    merged.enrichment_status = detail.errors?.length ? "partial" : "complete";
+
+    await db.saveProspect(merged);
+    broadcast("prospect_updated", merged);
+    await db.logActivity({
+      type: "websearch_enrich",
+      detail: `Websearch enrich: ${merged.first_name || ""} ${merged.last_name || ""} @ ${merged.company_name || ""}`.trim(),
+      prospect_id: prospectId,
+    });
+    return res.json({
+      status: detail.errors?.length ? "partial" : "ok",
+      prospect: merged,
+      detail,
+    });
+  } catch (err) {
+    log.error("websearch enrich-one", { error: err.message });
     res.status(400).json({ error: err.message });
   }
 });

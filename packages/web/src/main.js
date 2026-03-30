@@ -231,6 +231,44 @@ function startModalBrowserbaseLinkedInEnrich(prospectId, sessionIdExplicit) {
     });
 }
 
+function startModalWebsearchEnrich(prospectId) {
+  const wrap = document.getElementById("modal-bb-progress-wrap");
+  const label = document.getElementById("modal-bb-progress-label");
+  const bar = document.getElementById("modal-bb-progress-bar");
+  const hint = document.getElementById("modal-bb-login-hint");
+  const btn = document.getElementById("modal-btn-web-enrich");
+  if (!wrap || !label || !bar || !hint) return;
+  hint.classList.add("hidden");
+  hint.innerHTML = "";
+  wrap.classList.remove("hidden");
+  bar.classList.add("indeterminate");
+  if (btn) btn.disabled = true;
+  label.textContent = "Running websearch enrichment…";
+  showPipelineProgressBar("Websearch enrichment: collecting and grounding website/search evidence…");
+
+  api.websearchEnrichOne(prospectId)
+    .then((out) => {
+      hidePipelineProgressBar();
+      bar.classList.remove("indeterminate");
+      wrap.classList.add("hidden");
+      if (out.status === "ok" || out.status === "partial") {
+        openProspectModal(prospectId);
+        return;
+      }
+      label.textContent = out.error || out.status || "Incomplete";
+      wrap.classList.remove("hidden");
+      alert(out.error || out.status || "Websearch enrichment did not complete");
+    })
+    .catch((e) => {
+      hidePipelineProgressBar();
+      bar.classList.remove("indeterminate");
+      label.textContent = e.message || String(e);
+    })
+    .finally(() => {
+      if (btn) btn.disabled = false;
+    });
+}
+
 function isProspectsRoute() {
   return (location.hash || "#/").startsWith("#/prospects");
 }
@@ -632,7 +670,8 @@ async function openProspectModal(id) {
         body.innerHTML = `<div class="modal-enrich-panel" id="modal-bb-enrich-panel">
           <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
             <button type="button" class="btn btn-sm" id="modal-btn-bb-enrich">Enrich from LinkedIn</button>
-            <span class="text-muted" style="font-size:0.75rem">Browserbase — uses saved session when already signed in (no popup).</span>
+            <button type="button" class="btn btn-sm" id="modal-btn-web-enrich">Enrich from Websearch</button>
+            <span class="text-muted" style="font-size:0.75rem">LinkedIn uses Browserbase session reuse; Websearch runs grounded website/search enrichment.</span>
           </div>
           <div id="modal-bb-progress-wrap" class="modal-bb-progress-wrap hidden">
             <div id="modal-bb-progress-label" class="modal-bb-progress-label"></div>
@@ -665,6 +704,9 @@ async function openProspectModal(id) {
         </div>`;
         document.getElementById("modal-btn-bb-enrich")?.addEventListener("click", () => {
           startModalBrowserbaseLinkedInEnrich(id, undefined);
+        });
+        document.getElementById("modal-btn-web-enrich")?.addEventListener("click", () => {
+          startModalWebsearchEnrich(id);
         });
       } else if (tab === "audit") {
         const v = p.verification;
