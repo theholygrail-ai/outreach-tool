@@ -1,5 +1,9 @@
 /**
  * Deep enrichment: multi-page fetch, optional Firecrawl + Playwright, Groq with field provenance.
+ *
+ * LinkedIn (logged-in) enrichment is separate: operator starts a Browserbase session
+ * (`POST /api/enrichment/browserbase/linkedin-session`), signs in via the live debugger URL,
+ * then `POST /api/enrichment/browserbase/linkedin-enrich` with `session_id` + `prospect_ids`.
  */
 import { config } from "@outreach-tool/shared/config";
 import { createLogger } from "@outreach-tool/shared/logger";

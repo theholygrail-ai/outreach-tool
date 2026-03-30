@@ -540,7 +540,7 @@ async function discoverViaExplorium(country, industry, limit) {
   const n = limit || 50;
   const businesses = await mcpCall("fetch_businesses", {
     country_code: country || "US",
-    company_size_max: 100,
+    company_size_max: 500,
     limit: n,
   });
   const bizList = Array.isArray(businesses) ? businesses : businesses?.businesses || businesses?.results || [];
@@ -561,10 +561,20 @@ async function discoverViaExplorium(country, industry, limit) {
 
     if (bizId) {
       try {
-        const people = await mcpCall("fetch_prospects", { business_id: bizId, limit: 1 });
+        const people = await mcpCall("fetch_prospects", { business_id: bizId, limit: 5 });
         const personList = Array.isArray(people) ? people : people?.prospects || people?.results || [];
-        if (personList.length > 0) {
-          const p = personList[0];
+        const scorePerson = (p) => {
+          let s = 0;
+          if (p.email || p.business_email) s += 3;
+          if (p.linkedin_url || p.linkedin) s += 2;
+          if (p.phone || p.phone_number || p.direct_phone) s += 2;
+          if (p.title || p.role || p.job_title) s += 1;
+          if (p.first_name || p.last_name || p.name) s += 1;
+          return s;
+        };
+        const sorted = [...personList].sort((a, b) => scorePerson(b) - scorePerson(a));
+        if (sorted.length > 0) {
+          const p = sorted[0];
           base.first_name = p.first_name || p.name?.split(" ")[0] || null;
           base.last_name = p.last_name || p.name?.split(" ").slice(1).join(" ") || null;
           base.email = p.email || p.business_email || null;

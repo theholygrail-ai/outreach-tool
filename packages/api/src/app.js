@@ -13,6 +13,11 @@ import * as db from "./db.js";
 import { addClient, broadcast } from "./events.js";
 import { buildSettingsSnapshot, runConnectorTest } from "./settings-lib.js";
 import { hasSenderIdentity } from "@outreach-tool/shared/ses-send";
+import {
+  createLinkedInAuthSession,
+  enrichProspectsViaLinkedInSession,
+  enrichOneProspectLinkedInFlow,
+} from "./enrichment/browserbase-linkedin.js";
 
 const log = createLogger("api");
 const app = express();
@@ -206,6 +211,167 @@ app.post("/api/prospects/import", async (req, res) => {
   }
 });
 
+// --- Browserbase: LinkedIn sign-in in live session, then CDP scrape into prospects ---
+app.post("/api/enrichment/browserbase/linkedin-session", async (req, res) => {
+  try {
+    const out = await createLinkedInAuthSession();
+    res.json(out);
+  } catch (err) {
+    log.error("browserbase linkedin-session", { error: err.message });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/enrichment/browserbase/linkedin-enrich", async (req, res) => {
+  try {
+    const sessionId = req.body?.session_id;
+    const prospectIds = req.body?.prospect_ids;
+    if (!sessionId || typeof sessionId !== "string") {
+      return res.status(400).json({ error: "session_id required" });
+    }
+    if (!Array.isArray(prospectIds) || prospectIds.length === 0) {
+      return res.status(400).json({ error: "prospect_ids must be a non-empty array" });
+    }
+    const ids = [...new Set(prospectIds.map(String))].slice(0, 25);
+    const loaded = await Promise.all(ids.map((id) => db.getProspect(id)));
+    const miss = ids.filter((id, i) => !loaded[i]);
+    if (miss.length) {
+      return res.status(404).json({ error: `Unknown prospect id(s): ${miss.join(", ")}` });
+    }
+
+    const { results, errors } = await enrichProspectsViaLinkedInSession(sessionId, loaded);
+
+    const saved = [];
+    for (const r of results) {
+      const id = r.prospect?.id;
+      if (!id) continue;
+      if (r.needs_login) {
+        saved.push({
+          id,
+          ok: false,
+          skipped: false,
+          partial: false,
+          needs_login: true,
+          error: "linkedin_sign_in_required",
+        });
+        continue;
+      }
+      const existing = await db.getProspect(id);
+      if (!existing) continue;
+      const p = r.prospect;
+      const merged = { ...existing, updated_at: new Date().toISOString() };
+      for (const k of ["first_name", "last_name", "executive_role", "email", "phone_number", "linkedin_url", "city_or_region"]) {
+        if (p[k] != null && String(p[k]).trim() !== "") merged[k] = p[k];
+      }
+      merged.data_sources = [...new Set([...(existing.data_sources || []), ...(p.data_sources || [])])];
+      merged.enrichment_details = {
+        ...(existing.enrichment_details || {}),
+        browserbase_linkedin: {
+          ...(existing.enrichment_details?.browserbase_linkedin || {}),
+          last_run_at: new Date().toISOString(),
+          last_detail: r.detail ?? null,
+          last_ok: !!r.ok,
+        },
+      };
+      await db.saveProspect(merged);
+      broadcast("prospect_updated", merged);
+      saved.push({
+        id,
+        ok: !!r.ok,
+        skipped: !!r.skipped,
+        partial: !!r.partial,
+        needs_login: false,
+        error: r.error || null,
+      });
+    }
+
+    await db.logActivity({
+      type: "browserbase_linkedin_enrich",
+      detail: `Browserbase LinkedIn: ${saved.filter((x) => x.ok).length} updated, ${saved.filter((x) => x.needs_login).length} need login, ${errors.length} errors, ${ids.length} requested`,
+    });
+
+    res.json({ saved, errors });
+  } catch (err) {
+    log.error("browserbase linkedin-enrich", { error: err.message });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/enrichment/browserbase/linkedin-enrich-one", async (req, res) => {
+  try {
+    const prospectId = req.body?.prospect_id;
+    const sessionIdIn = req.body?.session_id && String(req.body.session_id).trim() ? String(req.body.session_id).trim() : null;
+    if (!prospectId) {
+      return res.status(400).json({ error: "prospect_id required" });
+    }
+    const existing = await db.getProspect(prospectId);
+    if (!existing) {
+      return res.status(404).json({ error: "Prospect not found" });
+    }
+
+    const flow = await enrichOneProspectLinkedInFlow(existing, { session_id: sessionIdIn });
+
+    if (flow.status === "needs_login") {
+      return res.json({
+        status: "needs_login",
+        session_id: flow.session_id,
+        debugger_url: flow.debugger_url,
+        debugger_fullscreen_url: flow.debugger_fullscreen_url,
+        detail: flow.detail,
+        message: "Open the debugger window, sign in to LinkedIn, then retry enrichment using the same session.",
+      });
+    }
+
+    if (flow.status === "ok") {
+      const p = flow.prospect;
+      const merged = { ...existing, updated_at: new Date().toISOString() };
+      for (const k of ["first_name", "last_name", "executive_role", "email", "phone_number", "linkedin_url", "city_or_region"]) {
+        if (p[k] != null && String(p[k]).trim() !== "") merged[k] = p[k];
+      }
+      merged.data_sources = [...new Set([...(existing.data_sources || []), ...(p.data_sources || [])])];
+      merged.enrichment_details = {
+        ...(existing.enrichment_details || {}),
+        browserbase_linkedin: {
+          ...(existing.enrichment_details?.browserbase_linkedin || {}),
+          last_run_at: new Date().toISOString(),
+          last_detail: flow.detail ?? null,
+          last_ok: true,
+        },
+      };
+      await db.saveProspect(merged);
+      broadcast("prospect_updated", merged);
+      await db.logActivity({
+        type: "browserbase_linkedin_enrich",
+        detail: `Browserbase LinkedIn (single): ${merged.first_name} ${merged.last_name} @ ${merged.company_name || ""}`,
+        prospect_id: prospectId,
+      });
+      return res.json({
+        status: "ok",
+        session_id: flow.session_id,
+        prospect: merged,
+        detail: flow.detail,
+      });
+    }
+
+    const errMsg = flow.error || flow.status;
+    await db.logActivity({
+      type: "browserbase_linkedin_enrich",
+      detail: `Browserbase LinkedIn (single) incomplete: ${errMsg}`,
+      prospect_id: prospectId,
+    });
+    return res.json({
+      status: flow.status,
+      session_id: flow.session_id,
+      error: flow.error || flow.status,
+      detail: flow.detail,
+      prospect: existing,
+    });
+  } catch (err) {
+    log.error("browserbase linkedin-enrich-one", { error: err.message });
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // --- Activity ---
 app.get("/api/activity", async (req, res) => {
   try {
@@ -396,6 +562,11 @@ app.get("/api/tools/status", (req, res) => {
     },
     calendly: { status: config.calendly?.clientId ? "configured" : "not_configured" },
     groq: { status: config.groq.apiKey ? "connected" : "not_configured" },
+    browserbase: {
+      status: config.enrichment?.browserbaseApiKey ? "configured" : "not_configured",
+      note:
+        "Set BROWSERBASE_API_KEY on the API. In the app: Prospects → status strip, or open a prospect → Enrich from LinkedIn. Activity log records each run.",
+    },
     outreach: {
       auto_send: process.env.OUTREACH_AUTO_SEND !== "0" && process.env.OUTREACH_AUTO_SEND !== "false",
       dry_run: process.env.OUTREACH_DRY_RUN === "1" || process.env.OUTREACH_DRY_RUN === "true",

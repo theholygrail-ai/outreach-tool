@@ -78,14 +78,17 @@ export const config = {
     maxPages: parseInt(process.env.ENRICH_MAX_PAGES, 10) || 8,
     playwrightEnabled: process.env.PLAYWRIGHT_ENABLED === "1" || process.env.PLAYWRIGHT_ENABLED === "true",
     /** Minimum quality score after verify to be list-eligible */
-    strictMinQuality: parseInt(process.env.STRICT_MIN_QUALITY, 10) || 40,
+    strictMinQuality: parseInt(process.env.STRICT_MIN_QUALITY, 10) || 28,
     /**
      * Minimum score to keep a lead from discovery (after adjustScoreForDiscoveryPipeline).
-     * Base verify scores are harsh when the site is down or Brave does not match Arabic names — default is below the old hardcoded 30.
+     * Base verify scores are harsh when the site is down or Brave does not match Arabic names — default kept low so fewer leads are dropped.
      */
-    discoveryMinQuality: parseInt(process.env.DISCOVERY_MIN_QUALITY, 10) || 22,
+    discoveryMinQuality: parseInt(process.env.DISCOVERY_MIN_QUALITY, 10) || 12,
     /** If false, skip contact-field requirements (quality only) */
     strictRequireContact: process.env.STRICT_REQUIRE_CONTACT !== "0",
+    /** Browserbase — remote browser for LinkedIn sign-in + profile scrape (see /api/enrichment/browserbase/*) */
+    browserbaseApiKey: process.env.BROWSERBASE_API_KEY || null,
+    browserbaseProjectId: process.env.BROWSERBASE_PROJECT_ID || null,
     /**
      * any_one_contact (default when env unset) — valid email OR dialable phone OR LinkedIn /in/ URL.
      * email_only — valid email only.

@@ -80,6 +80,13 @@ export function buildSettingsSnapshot() {
       zone: config.enrichment?.brightdataZone || null,
     },
     {
+      id: "browserbase",
+      label: "Browserbase (LinkedIn session)",
+      configured: !!config.enrichment?.browserbaseApiKey,
+      keyMasked: maskSecret(config.enrichment?.browserbaseApiKey),
+      projectId: config.enrichment?.browserbaseProjectId || null,
+    },
+    {
       id: "vercel",
       label: "Vercel",
       configured: !!config.vercel?.token,
@@ -108,6 +115,9 @@ export function buildSettingsSnapshot() {
     { id: "bookings", path: "/api/bookings", method: "GET" },
     { id: "tools_status", path: "/api/tools/status", method: "GET" },
     { id: "settings", path: "/api/settings", method: "GET" },
+    { id: "bb_li_session", path: "/api/enrichment/browserbase/linkedin-session", method: "POST", note: "Live browser for LinkedIn login" },
+    { id: "bb_li_enrich", path: "/api/enrichment/browserbase/linkedin-enrich", method: "POST" },
+    { id: "bb_li_enrich_one", path: "/api/enrichment/browserbase/linkedin-enrich-one", method: "POST", note: "Single prospect modal enrich" },
     { id: "events_sse", path: "/api/events", method: "GET", note: "SSE stream (probe may abort early)" },
   ];
 
@@ -156,6 +166,8 @@ export async function runConnectorTest(name) {
       return testHunter();
     case "brightdata":
       return testBrightData();
+    case "browserbase":
+      return testBrowserbase();
     default:
       return { ok: false, error: `Unknown connector: ${name}` };
   }
@@ -303,4 +315,9 @@ async function testBrightData() {
   const txt = await r.text();
   if (!r.ok) return { ok: false, status: r.status, detail: txt.slice(0, 400) };
   return { ok: true, detail: "Bright Data /request OK (example.com)" };
+}
+
+async function testBrowserbase() {
+  if (!config.enrichment?.browserbaseApiKey) return { ok: false, error: "BROWSERBASE_API_KEY not set" };
+  return { ok: true, detail: "Key configured (use Prospects → LinkedIn: open session to create a live browser)" };
 }

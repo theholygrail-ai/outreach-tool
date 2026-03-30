@@ -85,6 +85,30 @@ export async function fetchBookings() { return apiFetch("/api/bookings"); }
 export async function fetchToolsStatus() { return apiFetch("/api/tools/status"); }
 export async function fetchSettings() { return apiFetch("/api/settings"); }
 
+/** Browserbase live session for LinkedIn sign-in; open `debugger_url` in a popup. */
+export async function createBrowserbaseLinkedInSession() {
+  return apiFetch("/api/enrichment/browserbase/linkedin-session", { method: "POST", body: JSON.stringify({}) });
+}
+
+/** After sign-in, scrape LinkedIn for up to 25 prospects (profile URL or name+company search). */
+export async function browserbaseLinkedInEnrich(sessionId, prospectIds) {
+  return apiFetch("/api/enrichment/browserbase/linkedin-enrich", {
+    method: "POST",
+    body: JSON.stringify({ session_id: sessionId, prospect_ids: prospectIds }),
+  });
+}
+
+/** Single prospect LinkedIn scrape; pass stored session_id after sign-in to skip popup when still authenticated. */
+export async function browserbaseLinkedInEnrichOne(prospectId, sessionId) {
+  return apiFetch("/api/enrichment/browserbase/linkedin-enrich-one", {
+    method: "POST",
+    body: JSON.stringify({
+      prospect_id: prospectId,
+      session_id: sessionId || null,
+    }),
+  });
+}
+
 export async function testConnector(connectorId) {
   const res = await fetch(apiUrl(`/api/settings/test/${encodeURIComponent(connectorId)}`), {
     method: "POST",

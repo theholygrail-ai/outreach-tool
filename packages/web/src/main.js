@@ -73,6 +73,53 @@ function updatePipelineProgressUI(data) {
   showPipelineProgressBar(formatPipelineProgressMessage(data));
 }
 
+/** Sidebar: Groq + Browserbase from GET /api/tools/status */
+async function refreshNavIntegrationStatus() {
+  const groqEl = document.getElementById("nav-groq-status");
+  const bbEl = document.getElementById("nav-browserbase-status");
+  if (!groqEl && !bbEl) return;
+  try {
+    const st = await api.fetchToolsStatus();
+    if (groqEl) {
+      const ok = st.groq?.status === "connected";
+      groqEl.innerHTML = `<span class="dot ${ok ? "dot-green" : "dot-red"}"></span> Groq: ${ok ? "ready" : "no key"}`;
+    }
+    if (bbEl) {
+      const ok = st.browserbase?.status === "configured";
+      bbEl.innerHTML = `<span class="dot ${ok ? "dot-green" : "dot-amber"}"></span> Browserbase: ${ok ? "ready" : "needs key"}`;
+      bbEl.title = ok
+        ? "LinkedIn enrichment available from Prospects or prospect modal"
+        : "Set BROWSERBASE_API_KEY on the API server, then restart";
+    }
+  } catch {
+    if (groqEl) groqEl.innerHTML = `<span class="dot dot-gray"></span> Groq: offline?`;
+    if (bbEl) bbEl.innerHTML = `<span class="dot dot-gray"></span> Browserbase: offline?`;
+  }
+}
+
+function browserbaseProspectsBannerHtml(toolsStatus, sessionIdShort) {
+  const bb = toolsStatus?.browserbase || {};
+  const ok = bb.status === "configured";
+  const cls = ok ? "bb-ok" : "bb-warn";
+  const sessionLine = ok
+    ? (sessionIdShort
+      ? `<p class="text-muted" style="margin:0.35rem 0 0">Saved browser session: <code class="mono">${esc(sessionIdShort)}</code> (reused until it expires). Top bar shows progress while enriching.</p>`
+      : `<p class="text-muted" style="margin:0.35rem 0 0">No saved session yet — first run may open LinkedIn sign-in. Progress appears in the <strong>top bar</strong> and in the prospect modal.</p>`)
+    : `<p class="text-muted" style="margin:0.35rem 0 0">Add <code>BROWSERBASE_API_KEY</code> to the API environment and restart. Confirm under <strong>Settings → Connectors → browserbase → Test</strong>.</p>`;
+  const clearBtn = ok && sessionIdShort
+    ? `<button type="button" class="btn btn-xs" id="btn-bb-clear-session" style="margin-top:0.5rem">Clear saved session</button>`
+    : "";
+  return `<div class="bb-status-card ${cls}">
+    <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
+      <strong>Browserbase · LinkedIn enrichment</strong>
+      ${badge(ok ? "configured" : "not_configured")}
+    </div>
+    ${sessionLine}
+    <p class="text-muted" style="margin:0.35rem 0 0;font-size:0.78rem">Open any prospect → <strong>Info</strong> → <strong>Enrich from LinkedIn</strong>. Successful runs also appear in <strong>Dashboard → Recent Activity</strong>.</p>
+    ${clearBtn}
+  </div>`;
+}
+
 // ---- ROUTER ----
 function route() {
   const h = location.hash || "#/";
@@ -84,6 +131,7 @@ function route() {
   else if (h.startsWith("#/runs")) { setActive("runs"); renderRuns(); }
   else if (h.startsWith("#/settings")) { setActive("settings"); renderSettings(); }
   else { setActive("dashboard"); renderDashboard(); }
+  void refreshNavIntegrationStatus();
 }
 function setActive(v) { document.querySelector(`[data-view="${v}"]`)?.classList.add("active"); }
 
@@ -92,6 +140,96 @@ let appReady = false;
 
 /** Cancels in-flight `renderProspects` when navigating away or re-entering the route. */
 let prospectsRenderGeneration = 0;
+
+/** Set after "LinkedIn: open session" or modal enrich (Browserbase debugger / reuse). */
+let linkedInBrowserbaseSessionId = null;
+
+const BB_LI_SESSION_STORAGE_KEY = "outreach_tool_bb_linkedin_session";
+function getStoredBbLiSession() {
+  try {
+    return sessionStorage.getItem(BB_LI_SESSION_STORAGE_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+function setStoredBbLiSession(sessionId) {
+  try {
+    if (sessionId) sessionStorage.setItem(BB_LI_SESSION_STORAGE_KEY, sessionId);
+    else sessionStorage.removeItem(BB_LI_SESSION_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * @param {string} prospectId
+ * @param {string | null | undefined} sessionIdExplicit — pass session from needs_login retry; undefined = use sessionStorage if any
+ */
+function startModalBrowserbaseLinkedInEnrich(prospectId, sessionIdExplicit) {
+  const wrap = document.getElementById("modal-bb-progress-wrap");
+  const label = document.getElementById("modal-bb-progress-label");
+  const bar = document.getElementById("modal-bb-progress-bar");
+  const hint = document.getElementById("modal-bb-login-hint");
+  const btn = document.getElementById("modal-btn-bb-enrich");
+  if (!wrap || !label || !bar || !hint) return;
+  hint.classList.add("hidden");
+  hint.innerHTML = "";
+  wrap.classList.remove("hidden");
+  bar.classList.add("indeterminate");
+  if (btn) btn.disabled = true;
+  const reuse = sessionIdExplicit !== undefined && sessionIdExplicit !== null
+    ? sessionIdExplicit
+    : getStoredBbLiSession();
+  label.textContent = reuse ? "Connecting with saved session…" : "Starting Browserbase session…";
+  showPipelineProgressBar(reuse ? "Browserbase: LinkedIn enrichment (saved session)…" : "Browserbase: LinkedIn enrichment…");
+
+  api.browserbaseLinkedInEnrichOne(prospectId, reuse)
+    .then((out) => {
+      if (out.session_id) {
+        setStoredBbLiSession(out.session_id);
+        linkedInBrowserbaseSessionId = out.session_id;
+      }
+      if (out.status === "needs_login") {
+        hidePipelineProgressBar();
+        showPipelineProgressBar("Browserbase: sign in to LinkedIn in the popup, then Retry in the modal");
+        bar.classList.remove("indeterminate");
+        label.textContent = "Sign in required — use the remote browser, then Retry.";
+        hint.innerHTML = `<p class="text-muted" style="margin:0 0 0.5rem">A Browserbase window opens your signed-out session. Log in to LinkedIn there, then retry (same session).</p>
+          <button type="button" class="btn btn-sm" id="modal-bb-open-debugger">Open sign-in window</button>
+          <button type="button" class="btn btn-sm" style="margin-left:0.35rem" id="modal-bb-retry">Retry enrichment</button>`;
+        hint.classList.remove("hidden");
+        const openBtn = document.getElementById("modal-bb-open-debugger");
+        const retryBtn = document.getElementById("modal-bb-retry");
+        if (openBtn) {
+          openBtn.onclick = () => {
+            window.open(out.debugger_url, "outreach_bb_linkedin_modal", "width=1280,height=860,noopener,noreferrer");
+          };
+        }
+        if (retryBtn) {
+          retryBtn.onclick = () => startModalBrowserbaseLinkedInEnrich(prospectId, out.session_id);
+        }
+        return;
+      }
+      hidePipelineProgressBar();
+      wrap.classList.add("hidden");
+      bar.classList.remove("indeterminate");
+      if (out.status === "ok") {
+        openProspectModal(prospectId);
+        return;
+      }
+      label.textContent = out.error || out.status || "Incomplete";
+      wrap.classList.remove("hidden");
+      alert(out.error || out.status || "Enrichment did not complete");
+    })
+    .catch((e) => {
+      hidePipelineProgressBar();
+      bar.classList.remove("indeterminate");
+      label.textContent = e.message || String(e);
+    })
+    .finally(() => {
+      if (btn) btn.disabled = false;
+    });
+}
 
 function isProspectsRoute() {
   return (location.hash || "#/").startsWith("#/prospects");
@@ -227,7 +365,7 @@ function dashboardBodyInnerHtml(stats, activity) {
         <div class="card"><div class="card-header"><h2>Recent Activity</h2></div>
           <div class="activity-feed">${activity.map(a => `
             <div class="activity-item">
-              <div class="activity-dot dot-${a.type === "pipeline_started" || a.type === "pipeline_completed" ? "blue" : a.type === "booking" ? "green" : "gray"}"></div>
+              <div class="activity-dot dot-${a.type === "pipeline_started" || a.type === "pipeline_completed" ? "blue" : a.type === "booking" || a.type === "browserbase_linkedin_enrich" ? "green" : "gray"}"></div>
               <div class="activity-content">
                 <div class="activity-text">${esc(a.detail || "")}</div>
                 <div class="activity-time">${timeAgo(a.ts)}</div>
@@ -319,7 +457,13 @@ async function renderProspects() {
   }
   try {
     let showHidden = false;
-    let prospects = await api.fetchProspects({ visibility: "default" });
+    const [prospects, toolsSt] = await Promise.all([
+      api.fetchProspects({ visibility: "default" }),
+      api.fetchToolsStatus().catch(() => ({})),
+    ]);
+    const storedBb = getStoredBbLiSession();
+    const sessionShort = storedBb ? `${storedBb.slice(0, 14)}…` : "";
+    if (storedBb) linkedInBrowserbaseSessionId = storedBb;
     if (gen !== prospectsRenderGeneration || !isProspectsRoute()) return;
     let qualityFilter = "all";
 
@@ -346,11 +490,23 @@ async function renderProspects() {
             <option value="30+">Scored 30+</option>
           </select>
           <input type="text" id="search" class="input" placeholder="Search..." />
+          <button type="button" class="btn btn-sm" id="btn-bb-li-start" title="Open remote browser to sign in to LinkedIn">LinkedIn: open session</button>
+          <button type="button" class="btn btn-sm" id="btn-bb-li-run" title="Enrich up to 25 prospects from the current list">LinkedIn: enrich list</button>
+          <span class="text-muted" id="bb-li-status" style="font-size:0.72rem;max-width:8rem;overflow:hidden;text-overflow:ellipsis"></span>
           <button class="btn btn-sm" id="btn-add">+ New Prospect</button>
           <button class="btn btn-sm" id="btn-csv">Import CSV</button>
         </div>
       </div>
+      ${browserbaseProspectsBannerHtml(toolsSt, sessionShort)}
       <div class="card"><div class="table-wrap" id="prospect-table-wrap">${prospectTable(prospects)}</div></div>`;
+
+    document.getElementById("btn-bb-clear-session")?.addEventListener("click", () => {
+      setStoredBbLiSession(null);
+      linkedInBrowserbaseSessionId = null;
+      const stEl = document.getElementById("bb-li-status");
+      if (stEl) stEl.textContent = "";
+      void renderProspects();
+    });
 
     document.getElementById("show-hidden").addEventListener("change", async (e) => {
       showHidden = e.target.checked;
@@ -364,6 +520,67 @@ async function renderProspects() {
       qualityFilter = e.target.value;
       applyFilters(document.getElementById("search").value.toLowerCase());
     });
+    document.getElementById("btn-bb-li-start")?.addEventListener("click", async () => {
+      const btn = document.getElementById("btn-bb-li-start");
+      const statusEl = document.getElementById("bb-li-status");
+      btn.disabled = true;
+      showPipelineProgressBar("Browserbase: creating live browser session…");
+      try {
+        const s = await api.createBrowserbaseLinkedInSession();
+        linkedInBrowserbaseSessionId = s.session_id;
+        setStoredBbLiSession(s.session_id);
+        if (statusEl) statusEl.textContent = s.session_id ? `${s.session_id.slice(0, 10)}…` : "";
+        hidePipelineProgressBar();
+        window.open(s.debugger_url, "outreach_bb_linkedin", "width=1280,height=860,noopener,noreferrer");
+        alert("Sign in to LinkedIn in the new window. When finished, click \"LinkedIn: enrich list\" here (session expires when Browserbase times it out).");
+      } catch (e) {
+        linkedInBrowserbaseSessionId = null;
+        if (statusEl) statusEl.textContent = "";
+        hidePipelineProgressBar();
+        alert(e.message || String(e));
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById("btn-bb-li-run")?.addEventListener("click", async () => {
+      const sid = linkedInBrowserbaseSessionId || getStoredBbLiSession();
+      if (!sid) {
+        alert("Use \"LinkedIn: open session\" first (or run modal enrich once to create a session), then sign in if prompted.");
+        return;
+      }
+      linkedInBrowserbaseSessionId = sid;
+      const btn = document.getElementById("btn-bb-li-run");
+      const ids = prospects.slice(0, 25).map((p) => p.id);
+      if (!ids.length) {
+        alert("No prospects in the current list.");
+        return;
+      }
+      btn.disabled = true;
+      showPipelineProgressBar(`Browserbase: LinkedIn enrichment (${ids.length} prospects)…`);
+      try {
+        const out = await api.browserbaseLinkedInEnrich(sid, ids);
+        hidePipelineProgressBar();
+        const ok = (out.saved || []).filter((x) => x.ok).length;
+        const skipped = (out.saved || []).filter((x) => x.skipped).length;
+        const errs = (out.errors || []).length;
+        const needLogin = (out.saved || []).filter((x) => x.needs_login).length;
+        alert(
+          `LinkedIn enrich finished: ${ok} updated, ${skipped} skipped, ${errs} scrape errors` +
+            (needLogin ? `, ${needLogin} need LinkedIn sign-in (open session + debugger).` : ".") +
+            " Check Dashboard activity for a log line.",
+        );
+        prospects = await api.fetchProspects({ visibility: showHidden ? "all" : "default" });
+        document.getElementById("prospect-count").textContent = `(${prospects.length})`;
+        applyFilters(document.getElementById("search").value.toLowerCase());
+      } catch (e) {
+        hidePipelineProgressBar();
+        alert(e.message || String(e));
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     document.getElementById("btn-add")?.addEventListener("click", showNewProspectForm);
     document.getElementById("btn-csv")?.addEventListener("click", showCsvImport);
     bindRows();
@@ -412,7 +629,18 @@ async function openProspectModal(id) {
     function showTab(tab) {
       const body = document.getElementById("modal-body");
       if (tab === "info") {
-        body.innerHTML = `<div class="detail-grid">
+        body.innerHTML = `<div class="modal-enrich-panel" id="modal-bb-enrich-panel">
+          <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
+            <button type="button" class="btn btn-sm" id="modal-btn-bb-enrich">Enrich from LinkedIn</button>
+            <span class="text-muted" style="font-size:0.75rem">Browserbase — uses saved session when already signed in (no popup).</span>
+          </div>
+          <div id="modal-bb-progress-wrap" class="modal-bb-progress-wrap hidden">
+            <div id="modal-bb-progress-label" class="modal-bb-progress-label"></div>
+            <div class="modal-bb-progress-track"><div id="modal-bb-progress-bar" class="modal-bb-progress-bar"></div></div>
+          </div>
+          <div id="modal-bb-login-hint" class="modal-bb-login-hint hidden"></div>
+        </div>
+        <div class="detail-grid">
           ${dRow("Name", `${esc(p.first_name)} ${esc(p.last_name)}`)}
           ${dRow("Company", esc(p.company_name))}${dRow("Role", esc(p.executive_role || p.role))}
           ${dRow("Email", linkOrDash(p.email ? `mailto:${p.email}` : null, p.email))}
@@ -425,8 +653,19 @@ async function openProspectModal(id) {
           ${dRow("Status", badge(p.status || p.outreach_status))}${dRow("ICP", icpBadge(p.icp_score))}
           ${dRow("List visibility", p.display_eligible === false ? badge("hidden") : badge("visible"))}
           ${dRow("Enrichment", esc(p.enrichment_status || "—"))}
+          ${(() => {
+            const bb = p.enrichment_details?.browserbase_linkedin;
+            if (!bb?.last_run_at && bb?.last_ok == null) return "";
+            const when = bb.last_run_at ? `${timeAgo(bb.last_run_at)} · ${esc(bb.last_run_at)}` : "—";
+            const st = bb.last_ok === true ? "success" : bb.last_ok === false ? "incomplete" : "—";
+            const ex = bb.last_detail?.excerpt_chars != null ? ` · ${bb.last_detail.excerpt_chars} chars scraped` : "";
+            return dRow("Last LinkedIn (Browserbase)", `${when} · ${st}${ex}`);
+          })()}
           ${dRow("Notes", esc(p.notes))}
         </div>`;
+        document.getElementById("modal-btn-bb-enrich")?.addEventListener("click", () => {
+          startModalBrowserbaseLinkedInEnrich(id, undefined);
+        });
       } else if (tab === "audit") {
         const v = p.verification;
         if (!v) {
@@ -615,13 +854,18 @@ async function renderTools() {
       { name: "outreach", label: "Outreach", tools: ["send_email","queue_whatsapp_message","queue_linkedin_message","generate_voice_note_script"] },
       { name: "tracking", label: "Tracking", tools: ["log_outreach_event","check_suppression"] },
       { name: "calendly", label: "Calendly", tools: ["list_calendly_bookings"] },
+      { name: "browserbase", label: "Browserbase", tools: ["linkedin_session (API)", "linkedin_enrich (API)"] },
     ];
 
     main().innerHTML = `<div class="view-header"><h1>Tools</h1><span class="text-muted">${groups.reduce((s, g) => s + g.tools.length, 0)} tools across ${groups.length} integrations</span></div>
       ${groups.map(g => {
         const s = status[g.name === "outreach" ? "ses" : g.name] || {};
+        const bbHelp =
+          g.name === "browserbase" && s.note
+            ? `<p class="text-muted" style="font-size:0.78rem;margin:0;padding:0 1rem 1rem;line-height:1.45">${esc(s.note)}</p>`
+            : "";
         return `<div class="card"><div class="card-header"><h2><span class="tool-dot ${g.name}"></span> ${g.label}</h2>${badge(s.status || "unknown")}</div>
-          <div class="tools-list">${g.tools.map(t => `<div class="tool-row"><span class="tool-name">${t}</span></div>`).join("")}</div></div>`;
+          <div class="tools-list">${g.tools.map(t => `<div class="tool-row"><span class="tool-name">${t}</span></div>`).join("")}</div>${bbHelp}</div>`;
       }).join("")}`;
   } catch (err) {
     main().innerHTML = `<div class="error">${esc(err.message)}</div>`;
