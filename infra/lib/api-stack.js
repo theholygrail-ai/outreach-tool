@@ -48,10 +48,15 @@ export class ApiStack extends cdk.Stack {
       externalModules: [],
     };
 
-    /** Playwright is dynamic-import only; keep external so CDK zip bundle works without Docker. */
+    /** Playwright must not be esbuild-bundled (breaks chromium / CDP). Install into Lambda node_modules instead. */
+    const playwrightNodeModules = ["playwright", "playwright-core", "chromium-bidi"];
     const workerBundling = {
       ...bundling,
-      externalModules: ["playwright", "playwright-core"],
+      nodeModules: playwrightNodeModules,
+    };
+    const httpApiBundling = {
+      ...bundling,
+      nodeModules: playwrightNodeModules,
     };
 
     const workerFn = new NodejsFunction(this, "PipelineWorkerFn", {
@@ -84,7 +89,7 @@ export class ApiStack extends cdk.Stack {
       environment: buildLambdaEnv(table.tableName, bucket.bucketName, {
         pipelineWorkerName: workerFn.functionName,
       }),
-      bundling,
+      bundling: httpApiBundling,
     });
     table.grantReadWriteData(apiFn);
     bucket.grantReadWrite(apiFn);

@@ -575,7 +575,7 @@ app.get("/api/tools/status", (req, res) => {
 });
 
 // --- Pipeline Runner: AWS Lambda async invoke (prod) or child process (local) ---
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const appDir = dirname(fileURLToPath(import.meta.url));
 
 async function runPipeline(run) {
   const workerFn = process.env.PIPELINE_WORKER_FUNCTION_NAME;
@@ -592,7 +592,7 @@ async function runPipeline(run) {
     return;
   }
 
-  const workerPath = join(__dirname, "pipeline-worker.js");
+  const workerPath = join(appDir, "pipeline-worker.js");
   const child = fork(workerPath, [JSON.stringify(run)], {
     stdio: ["pipe", "pipe", "pipe", "ipc"],
     env: { ...process.env },

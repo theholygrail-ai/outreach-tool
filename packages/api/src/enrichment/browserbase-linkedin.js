@@ -5,7 +5,6 @@
 import { config } from "@outreach-tool/shared/config";
 import { createLogger } from "@outreach-tool/shared/logger";
 import OpenAI from "openai";
-import { chromium } from "playwright";
 import { emailLiteralInText, phoneDigitsInText, personNameInText, rolePhraseInText } from "./grounding.js";
 
 const log = createLogger("browserbase-li");
@@ -18,6 +17,17 @@ function delay(ms) {
 async function getBbClient() {
   const { default: Browserbase } = await import("@browserbasehq/sdk");
   return new Browserbase({ apiKey: config.enrichment.browserbaseApiKey });
+}
+
+/** Playwright ESM/CJS and esbuild output differ; never destructure chromium alone from dynamic import. */
+async function loadPlaywrightChromium() {
+  let mod = await import("playwright").catch(() => null);
+  let chromium = mod?.chromium ?? mod?.default?.chromium;
+  if (chromium?.connectOverCDP) return chromium;
+  mod = await import("playwright-core");
+  chromium = mod.chromium ?? mod.default?.chromium;
+  if (chromium?.connectOverCDP) return chromium;
+  throw new Error("Playwright chromium API unavailable (check Lambda bundles node_modules for playwright)");
 }
 
 export function normalizeLinkedInProfileUrl(raw) {
@@ -299,6 +309,7 @@ export async function enrichProspectsViaLinkedInSession(sessionId, prospects) {
     throw new Error("Session has no connectUrl (expired or invalid session_id)");
   }
 
+  const chromium = await loadPlaywrightChromium();
   const browser = await chromium.connectOverCDP(connectUrl);
   const results = [];
   const errors = [];
@@ -385,6 +396,7 @@ export async function enrichOneProspectLinkedInFlow(prospect, opts = {}) {
     throw new Error("Browserbase session has no connectUrl (expired or invalid)");
   }
 
+  const chromium = await loadPlaywrightChromium();
   const browser = await chromium.connectOverCDP(connectUrl);
   try {
     const context = browser.contexts()[0] || (await browser.newContext());
