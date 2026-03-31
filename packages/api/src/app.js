@@ -19,6 +19,7 @@ import {
   enrichOneProspectLinkedInFlow,
 } from "./enrichment/browserbase-linkedin.js";
 import { deepEnrichProspect } from "./enrichment/deep-enrich.js";
+import { generateComprehensiveAuditInsights, generateOutreachCopy } from "./enrichment/agent-copy.js";
 
 const log = createLogger("api");
 const app = express();
@@ -434,6 +435,89 @@ app.post("/api/enrichment/websearch/enrich-one", async (req, res) => {
     });
   } catch (err) {
     log.error("websearch enrich-one", { error: err.message });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/prospects/:id/generate-audit-insights", async (req, res) => {
+  try {
+    const existing = await db.getProspect(req.params.id);
+    if (!existing) return res.status(404).json({ error: "Prospect not found" });
+    const insights = await generateComprehensiveAuditInsights(existing);
+
+    const merged = {
+      ...existing,
+      enrichment_details: {
+        ...(existing.enrichment_details || {}),
+        generated_audit: insights,
+      },
+      updated_at: new Date().toISOString(),
+    };
+    await db.saveProspect(merged);
+    broadcast("prospect_updated", merged);
+    await db.logActivity({
+      type: "audit_generated",
+      detail: `Generated comprehensive audit insights for ${merged.company_name || merged.id}`,
+      prospect_id: merged.id,
+    });
+    res.json({ status: "ok", prospect: merged, insights });
+  } catch (err) {
+    log.error("generate-audit-insights", { error: err.message });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post("/api/prospects/:id/generate-outreach", async (req, res) => {
+  try {
+    const existing = await db.getProspect(req.params.id);
+    if (!existing) return res.status(404).json({ error: "Prospect not found" });
+    const channel = String(req.body?.channel || "all").toLowerCase();
+    const copy = await generateOutreachCopy(existing, channel);
+
+    const current = existing.outreach || {};
+    const next = { ...current };
+    if (channel === "all" || channel === "email") {
+      next.email = { ...(current.email || {}), status: "draft", subject: copy.email_subject || "", body: copy.email_body || "" };
+    }
+    if (channel === "all" || channel === "whatsapp") {
+      next.whatsapp = { ...(current.whatsapp || {}), status: "draft", message: copy.whatsapp_message || "" };
+    }
+    if (channel === "all" || channel === "linkedin") {
+      next.linkedin = {
+        ...(current.linkedin || {}),
+        status: "draft",
+        connection_note: copy.linkedin_connection_note || "",
+        inmail: copy.linkedin_inmail || "",
+      };
+    }
+    if (channel === "all" || channel === "voice" || channel === "voice_note") {
+      next.voice_note = { ...(current.voice_note || {}), status: "draft", script: copy.voice_script || "" };
+    }
+
+    const merged = {
+      ...existing,
+      outreach: next,
+      enrichment_details: {
+        ...(existing.enrichment_details || {}),
+        generated_outreach: {
+          channel,
+          generated_at: copy.generated_at,
+        },
+      },
+      status: existing.status === "discovered" ? "outreach_ready" : existing.status,
+      outreach_status: existing.outreach_status === "discovered" ? "outreach_ready" : existing.outreach_status,
+      updated_at: new Date().toISOString(),
+    };
+    await db.saveProspect(merged);
+    broadcast("prospect_updated", merged);
+    await db.logActivity({
+      type: "outreach_generated",
+      detail: `Generated ${channel} outreach copy for ${merged.company_name || merged.id}`,
+      prospect_id: merged.id,
+    });
+    res.json({ status: "ok", prospect: merged, outreach: merged.outreach });
+  } catch (err) {
+    log.error("generate-outreach", { error: err.message });
     res.status(400).json({ error: err.message });
   }
 });

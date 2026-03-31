@@ -269,6 +269,50 @@ function startModalWebsearchEnrich(prospectId) {
     });
 }
 
+function startModalAgentGenerate(prospectId, kind) {
+  const wrap = document.getElementById("modal-bb-progress-wrap");
+  const label = document.getElementById("modal-bb-progress-label");
+  const bar = document.getElementById("modal-bb-progress-bar");
+  const hint = document.getElementById("modal-bb-login-hint");
+  const btn = document.getElementById(`modal-btn-generate-${kind}`);
+  if (!wrap || !label || !bar || !hint) return;
+  hint.classList.add("hidden");
+  hint.innerHTML = "";
+  wrap.classList.remove("hidden");
+  bar.classList.add("indeterminate");
+  if (btn) btn.disabled = true;
+
+  const isAudit = kind === "audit";
+  label.textContent = isAudit ? "Generating detailed audit insights…" : `Generating ${kind} outreach copy…`;
+  showPipelineProgressBar(isAudit ? "Agentic audit analysis in progress…" : `Generating ${kind} outreach from prospect context…`);
+
+  const call = isAudit
+    ? api.generateAuditInsights(prospectId)
+    : api.generateOutreachForProspect(prospectId, kind);
+  call
+    .then((out) => {
+      hidePipelineProgressBar();
+      bar.classList.remove("indeterminate");
+      wrap.classList.add("hidden");
+      if (out.status === "ok") {
+        openProspectModal(prospectId);
+        return;
+      }
+      label.textContent = out.error || out.status || "Incomplete";
+      wrap.classList.remove("hidden");
+      alert(out.error || out.status || "Generation did not complete");
+    })
+    .catch((e) => {
+      hidePipelineProgressBar();
+      bar.classList.remove("indeterminate");
+      label.textContent = e.message || String(e);
+      wrap.classList.remove("hidden");
+    })
+    .finally(() => {
+      if (btn) btn.disabled = false;
+    });
+}
+
 function isProspectsRoute() {
   return (location.hash || "#/").startsWith("#/prospects");
 }
@@ -713,6 +757,7 @@ async function openProspectModal(id) {
         if (!v) {
           body.innerHTML = `<div class="empty">No verification data yet. Run discovery with verification enabled.</div>`;
         } else {
+          const ga = p.enrichment_details?.generated_audit;
           const checkRow = (label, passed, detail) =>
             `<div class="audit-check ${passed ? "check-pass" : "check-fail"}">
               <span class="check-icon">${passed ? "✓" : "✗"}</span>
@@ -721,6 +766,10 @@ async function openProspectModal(id) {
             </div>`;
           body.innerHTML = `
             <div class="audit-report">
+              <div style="margin:0 0 0.75rem">
+                <button type="button" class="btn btn-sm" id="modal-btn-generate-audit">Generate Detailed Audit Insights</button>
+                <span class="text-muted" style="margin-left:0.5rem;font-size:0.78rem">Uses all enrichment + verification + existing audit data.</span>
+              </div>
               <div class="audit-score-header">
                 <div class="audit-score-big ${(v.quality_score || 0) >= 70 ? "quality-high" : (v.quality_score || 0) >= 40 ? "quality-med" : "quality-low"}">${v.quality_score ?? "—"}</div>
                 <div class="audit-score-label">Quality Score</div>
@@ -752,10 +801,22 @@ async function openProspectModal(id) {
                 ${Object.keys(v.extracted_social || {}).length ? `<div class="audit-field"><label>Social links</label><div>${Object.entries(v.extracted_social).map(([k, url]) => `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(k)}</a>`).join(" · ")}</div></div>` : ""}
               </div>` : ""}
               ${v.enrichment_agent_insights?.summary ? `<div class="audit-insights"><h3>Enrichment agent insights</h3><p class="audit-text">${esc(v.enrichment_agent_insights.summary)}</p>${(v.enrichment_agent_insights.data_risks || []).length ? `<div class="audit-field"><label>Data risks</label><ul>${v.enrichment_agent_insights.data_risks.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}${(v.enrichment_agent_insights.recommended_follow_ups || []).length ? `<div class="audit-field"><label>Suggested follow-ups</label><ul>${v.enrichment_agent_insights.recommended_follow_ups.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}</div>` : ""}
+              ${ga ? `<div class="audit-insights"><h3>Generated Detailed Audit</h3>
+                ${ga.executive_summary ? `<p class="audit-text">${esc(ga.executive_summary)}</p>` : ""}
+                ${(ga.priority_gaps || []).length ? `<div class="audit-field"><label>Priority gaps</label><ul>${ga.priority_gaps.map((g) => `<li><strong>${esc(g.gap || "")}</strong> (${esc(g.impact || "n/a")}): ${esc(g.evidence || "")} → ${esc(g.recommended_fix || "")}</li>`).join("")}</ul></div>` : ""}
+                ${(ga.unmet_needs || []).length ? `<div class="audit-field"><label>Unmet needs</label><ul>${ga.unmet_needs.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+                ${(ga.solution_proposals || []).length ? `<div class="audit-field"><label>Solution proposals</label><ul>${ga.solution_proposals.map((s) => `<li><strong>${esc(s.proposal || "")}</strong> — ${esc(s.expected_outcome || "")}${s.why_now ? ` (${esc(s.why_now)})` : ""}</li>`).join("")}</ul></div>` : ""}
+                ${(ga.messaging_angles || []).length ? `<div class="audit-field"><label>Messaging angles</label><ul>${ga.messaging_angles.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+                ${(ga.proof_points_to_use || []).length ? `<div class="audit-field"><label>Proof points</label><ul>${ga.proof_points_to_use.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+                ${(ga.risk_flags || []).length ? `<div class="audit-field"><label>Risk flags</label><ul>${ga.risk_flags.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+              </div>` : ""}
               ${v.agent_notes ? `<div class="audit-notes"><h3>Agent Notes</h3><pre class="audit-text">${esc(v.agent_notes)}</pre></div>` : ""}
               ${(p.data_sources || []).length ? `<div class="audit-sources"><h3>Data Sources</h3><div class="source-tags">${p.data_sources.map(s => `<span class="source-tag">${esc(s.replace(/_/g, " "))}</span>`).join("")}</div></div>` : ""}
               ${p.audit_summary ? `<div class="audit-ux"><h3>Website UX Audit</h3><pre class="audit-text">${esc(p.audit_summary)}</pre></div>` : ""}
             </div>`;
+          document.getElementById("modal-btn-generate-audit")?.addEventListener("click", () => {
+            startModalAgentGenerate(id, "audit");
+          });
         }
       } else if (tab === "timeline") {
         body.innerHTML = `<div class="loading">Loading timeline...</div>`;
@@ -765,14 +826,22 @@ async function openProspectModal(id) {
       } else {
         const ch = tab === "voice" ? "voice_note" : tab;
         const msg = p.outreach?.[ch];
-        if (!msg || (!msg.body && !msg.message && !msg.script && !msg.connection_note)) {
-          body.innerHTML = `<div class="empty">No ${tab} content yet. Generate outreach via the pipeline.</div>`;
-          return;
-        }
+        const hasContent = !!(msg && (msg.body || msg.message || msg.script || msg.connection_note));
+        const genKey = ch === "voice_note" ? "voice" : ch;
         const content = ch === "email" ? msg.body : ch === "whatsapp" ? msg.message : ch === "linkedin" ? (msg.inmail || msg.connection_note) : msg.script;
-        body.innerHTML = `<div class="msg-status-row">Status: ${badge(msg.status || "pending")}</div>
-          ${ch === "email" && msg.subject ? `<div class="msg-field"><label>Subject</label><div>${esc(msg.subject)}</div></div>` : ""}
-          <div class="msg-field"><label>${tab === "voice" ? "Script" : "Message"}</label><pre class="msg-body">${esc(content || "")}</pre></div>`;
+        body.innerHTML = `
+          <div style="margin:0 0 0.75rem">
+            <button type="button" class="btn btn-sm" id="modal-btn-generate-${genKey}">Generate ${tab === "voice" ? "Voice Script" : `${tab.charAt(0).toUpperCase() + tab.slice(1)} Copy`}</button>
+            <span class="text-muted" style="margin-left:0.5rem;font-size:0.78rem">Uses audit findings + full prospect enrichment context.</span>
+          </div>
+          ${hasContent ? `<div class="msg-status-row">Status: ${badge(msg.status || "pending")}</div>
+            ${ch === "email" && msg.subject ? `<div class="msg-field"><label>Subject</label><div>${esc(msg.subject)}</div></div>` : ""}
+            <div class="msg-field"><label>${tab === "voice" ? "Script" : "Message"}</label><pre class="msg-body">${esc(content || "")}</pre></div>`
+            : `<div class="empty">No ${tab} content yet. Use Generate to create copy for this lead.</div>`}
+        `;
+        document.getElementById(`modal-btn-generate-${genKey}`)?.addEventListener("click", () => {
+          startModalAgentGenerate(id, genKey);
+        });
       }
     }
 

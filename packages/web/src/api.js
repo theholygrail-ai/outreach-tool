@@ -117,6 +117,20 @@ export async function websearchEnrichOne(prospectId) {
   });
 }
 
+export async function generateAuditInsights(prospectId) {
+  return apiFetch(`/api/prospects/${encodeURIComponent(prospectId)}/generate-audit-insights`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function generateOutreachForProspect(prospectId, channel = "all") {
+  return apiFetch(`/api/prospects/${encodeURIComponent(prospectId)}/generate-outreach`, {
+    method: "POST",
+    body: JSON.stringify({ channel }),
+  });
+}
+
 export async function testConnector(connectorId) {
   const res = await fetch(apiUrl(`/api/settings/test/${encodeURIComponent(connectorId)}`), {
     method: "POST",
